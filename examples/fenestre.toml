@@ -1,0 +1,160 @@
+decorations = false
+
+border_width = 2
+border_color_focused = 0xff0000ff
+border_color_unfocused = 0x00ff00ff
+
+[layout]
+gap = 10
+margin_top = 30
+margin_right = 10
+margin_bottom = 10
+margin_left = 10
+
+[[keybindings]]
+keysym = "Return"
+modifiers = ["super"]
+command = ["spawn", "foot"]
+
+[[keybindings]]
+keysym = "q"
+modifiers = ["super"]
+command = "close"
+
+[[keybindings]]
+keysym = "h"
+modifiers = ["super"]
+command = "focus_left"
+
+[[keybindings]]
+keysym = "j"
+modifiers = ["super"]
+command = "focus_down"
+
+[[keybindings]]
+keysym = "k"
+modifiers = ["super"]
+command = "focus_up"
+
+[[keybindings]]
+keysym = "l"
+modifiers = ["super"]
+command = "focus_right"
+
+[[keybindings]]
+keysym = "Tab"
+modifiers = ["super"]
+command = "focus_next"
+
+[[keybindings]]
+keysym = "Tab"
+modifiers = ["super", "shift"]
+command = "focus_previous"
+
+[[keybindings]]
+keysym = "s"
+modifiers = ["super"]
+command = "toggle_floating"
+
+[[keybindings]]
+keysym = "f"
+modifiers = ["super"]
+command = "toggle_fullscreen"
+
+[[keybindings]]
+keysym = "t"
+modifiers = ["super"]
+command = "tiled"
+
+[[keybindings]]
+keysym = "t"
+modifiers = ["super", "shift"]
+command = "toggle_pseudo_tiled"
+
+[[keybindings]]
+keysym = "r"
+modifiers = ["super", "shift"]
+command = "reload_config"
+
+[[keybindings]]
+keysym = "e"
+modifiers = ["super", "shift"]
+command = "exit_river"
+
+[[keybindings]]
+keysym = "h"
+modifiers = ["super", "shift"]
+command = "move_left"
+
+[[keybindings]]
+keysym = "j"
+modifiers = ["super", "shift"]
+command = "move_down"
+
+[[keybindings]]
+keysym = "k"
+modifiers = ["super", "shift"]
+command = "move_up"
+
+[[keybindings]]
+keysym = "l"
+modifiers = ["super", "shift"]
+command = "move_right"
+
+[[keybindings]]
+keysym = "h"
+modifiers = ["super", "alt"]
+command = ["resize_expand_left"]
+
+[[keybindings]]
+keysym = "j"
+modifiers = ["super", "alt"]
+command = ["resize_expand_down"]
+
+[[keybindings]]
+keysym = "k"
+modifiers = ["super", "alt"]
+command = ["resize_expand_up"]
+
+[[keybindings]]
+keysym = "l"
+modifiers = ["super", "alt"]
+command = ["resize_expand_right"]
+
+[[keybindings]]
+keysym = "h"
+modifiers = ["super", "shift", "alt"]
+command = ["resize_shrink_left"]
+
+[[keybindings]]
+keysym = "j"
+modifiers = ["super", "shift", "alt"]
+command = ["resize_shrink_down"]
+
+[[keybindings]]
+keysym = "k"
+modifiers = ["super", "shift", "alt"]
+command = ["resize_shrink_up"]
+
+[[keybindings]]
+keysym = "l"
+modifiers = ["super", "shift", "alt"]
+command = ["resize_shrink_right"]
+
+[[rules]]
+app_id = "mpv"
+mode = "fullscreen"
+
+[[rules]]
+app_id = { value = "libreoffice-", match = "prefix" }
+mode = "floating"
+
+[[rules]]
+app_id = "org.mozilla.Thunderbird"
+title = { value = "Enter your password.*", match = "regex" }
+mode = "floating"
+
+[[rules]]
+app_id = "steam"
+mode = "floating"
+floating_rect = { width = 1280, height = 1080 }

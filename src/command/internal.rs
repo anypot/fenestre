@@ -1,0 +1,83 @@
+//! Internal command representation for Fenestre.
+//!
+//! A `Command` is not a public IPC API. It is the internal dispatch enum used
+//! by config-loaded keybindings and `WMState` command handling.
+use crate::layout::FocusDirection;
+use crate::state::OutputId;
+
+/// Internal action triggered by a keybinding or future command source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum Command {
+    /// Move focus to the next window.
+    FocusNext,
+
+    /// Move focus to the previous window.
+    FocusPrevious,
+
+    /// Move focus upward.
+    FocusUp,
+
+    /// Move focus downward.
+    FocusDown,
+
+    /// Move focus left.
+    FocusLeft,
+
+    /// Move focus right.
+    FocusRight,
+
+    /// Split the focused container vertically.
+    SplitVertical,
+
+    /// Split the focused container horizontally.
+    SplitHorizontal,
+
+    /// Toggle fullscreen for the focused window.
+    ToggleFullscreen,
+
+    /// Toggle floating state for the focused window.
+    ToggleFloating,
+
+    /// Toggle pseudo-tiled state for the focused window.
+    TogglePseudoTiled,
+
+    /// Set the focused window to tiled state.
+    SetTiled,
+
+    /// Spawn a external program with optional arguments.
+    Spawn {
+        program: String,
+        args: Vec<String>,
+    },
+
+    /// Exit the River Wayland session.
+    ExitRiver,
+
+    /// Reload the active configuration file.
+    ReloadConfig,
+
+    /// Close the currently focused window.
+    CloseFocused,
+
+    /// Move focus to a specific output.
+    FocusOutput {
+        output_id: OutputId,
+    },
+
+    MoveLeft,
+
+    MoveRight,
+
+    MoveUp,
+
+    MoveDown,
+
+    ResizeExpand {
+        direction: FocusDirection,
+    },
+
+    ResizeShrink {
+        direction: FocusDirection,
+    },
+}

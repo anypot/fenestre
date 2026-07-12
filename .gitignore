@@ -1,0 +1,6 @@
+.codegraph
+.kilo
+
+/target
+*.log
+tags

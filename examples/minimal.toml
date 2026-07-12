@@ -1,0 +1,24 @@
+# Minimal Fenestre configuration.
+#
+# Copy this to ~/.config/fenestre/fenestre.toml and edit. Omitting any section
+# falls back to Fenestre's built-in defaults (keybindings are still loaded);
+# omitting `keybindings` entirely means "no user keybindings".
+
+[layout]
+gap = 4
+margin_top = 24
+margin_right = 4
+margin_bottom = 4
+margin_left = 4
+
+border_width = 2
+
+[[keybindings]]
+keysym = "Return"
+modifiers = ["super"]
+command = ["spawn", "foot"]
+
+[[keybindings]]
+keysym = "q"
+modifiers = ["super"]
+command = "close"
