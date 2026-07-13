@@ -78,6 +78,21 @@ impl From<::toml::de::Error> for ConfigError {
     }
 }
 
+/// Validate that a ratio parameter lies in the `[0.0, 1.0]` range.
+///
+/// `None` is treated as unset and passes through unchanged. Returns
+/// `Err(ConfigError::InvalidConfig)` when the value is present but outside
+/// the valid range.
+pub(crate) fn validate_ratio(name: &str, value: Option<f32>) -> Result<Option<f32>> {
+    match value {
+        Some(v) if (0.0..=1.0).contains(&v) => Ok(Some(v)),
+        Some(v) => Err(ConfigError::InvalidConfig(format!(
+            "{name} must be between 0.0 and 1.0, got {v}"
+        ))),
+        None => Ok(None),
+    }
+}
+
 /// Target seats for a keybinding.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum KeyBindingTarget {
@@ -122,7 +137,11 @@ struct KeyBindingIdentity {
     modifiers: u32,
 }
 
-/// Layout configuration for tiled windows.
+/// Output-relative window sizing and positioning defaults.
+///
+/// Covers the tiling area (gap, margins) and the default size used for
+/// floating / pseudo-tiled windows that have not reported their own
+/// dimensions.
 ///
 /// All fields are `Option` so that `None` means "inherit the default" and
 /// `Some(0)` explicitly disables the feature. This lets users opt back out
@@ -143,6 +162,10 @@ pub struct LayoutConfig {
 
     /// Left margin inset for the tiling area.
     pub margin_left: Option<i32>,
+
+    /// Default floating / pseudo-tiled size as a fraction of the destination
+    /// output, used when a window has not reported its own dimensions.
+    pub default_float_ratio: Option<f32>,
 }
 
 /// Complete Fenêtre configuration.
@@ -321,6 +344,9 @@ impl Config {
         }
         if let Some(margin_left) = other.layout.margin_left {
             self.layout.margin_left = Some(margin_left);
+        }
+        if let Some(default_float_ratio) = other.layout.default_float_ratio {
+            self.layout.default_float_ratio = Some(default_float_ratio);
         }
         self.decorations = other.decorations;
         if let Some(border_width) = other.border_width {
@@ -543,6 +569,7 @@ mod tests {
             margin_right: None,
             margin_bottom: None,
             margin_left: None,
+            default_float_ratio: None,
         }
     }
 

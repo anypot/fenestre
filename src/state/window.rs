@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 use crate::layout::Rect;
+use crate::layout::WindowState;
 use crate::protocol::river::river_window_management_v1::client::river_node_v1::RiverNodeV1;
 use crate::protocol::river::river_window_management_v1::client::river_window_v1::RiverWindowV1;
 
@@ -46,34 +47,6 @@ pub(super) struct DimensionsHint {
     pub(super) max_height: i32,
 }
 
-/// Window layout mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum WindowMode {
-    /// Window participates in tiling.
-    Tiled,
-
-    /// Window is pseudo-tiled.
-    PseudoTiled,
-
-    /// Window is floating.
-    Floating {
-        /// X coordinate.
-        x: i32,
-
-        /// Y coordinate.
-        y: i32,
-
-        /// Width in logical pixels.
-        width: i32,
-
-        /// Height in logical pixels.
-        height: i32,
-    },
-
-    /// Window is fullscreen.
-    Fullscreen,
-}
-
 /// Runtime state for a River window.
 pub(super) struct Window {
     /// Internal window identifier.
@@ -106,14 +79,17 @@ pub(super) struct Window {
     /// Desired layout rectangle.
     pub(super) layout_rect: Option<Rect>,
 
-    /// Current layout mode.
-    pub(super) mode: WindowMode,
+    /// Last resolved layout state for this window.
+    ///
+    /// This is a cache mirroring the authoritative per-node [`WindowState`] owned
+    /// by the layout tree, kept for protocol transition detection (entering /
+    /// leaving fullscreen) and render z-ordering, where the owning tree is not
+    /// conveniently in scope. The tree remains the source of truth; float
+    /// geometry lives in the node's `floating_rect`, not here.
+    pub(super) mode: WindowState,
 
     /// Current position.
     pub(super) position: Position,
-
-    /// Current dimensions.
-    pub(super) dimensions: Dimensions,
 
     /// Current size hints.
     pub(super) dimensions_hint: DimensionsHint,
@@ -130,6 +106,12 @@ pub(super) struct Window {
     pub(super) last_border: Option<(i32, u32)>,
 }
 
+/// Minimum size (logical pixels) for a floating/pseudo-tiled window when the
+/// window has not reported its own dimensions, so a tiny output does not
+/// produce an unusably small window. Capped to the output size so it never
+/// overflows a tiny output.
+const MIN_FLOAT_SIZE: i32 = 320;
+
 impl Window {
     /// Create a new window record.
     pub(super) fn new(id: WindowId, output_id: OutputId) -> Self {
@@ -144,9 +126,8 @@ impl Window {
             title: None,
             rules_applied: false,
             pid: 0,
-            mode: WindowMode::Tiled,
+            mode: WindowState::Tiled,
             position: Position::default(),
-            dimensions: Dimensions::default(),
             dimensions_hint: DimensionsHint::default(),
             decoration_hint: None,
             last_border: None,
@@ -169,26 +150,43 @@ impl Window {
         self.position.y = y;
     }
 
-    /// Update this window's dimensions.
-    pub(super) fn set_dimensions(&mut self, width: i32, height: i32) {
-        self.dimensions.width = width;
-        self.dimensions.height = height;
+    /// Record the app-provided size constraints reported by the compositor.
+    ///
+    /// These are the window's genuine min/max preferences and are used to clamp
+    /// the ratio-based default size in `preferred_dimensions`.
+    pub(super) fn set_dimensions_hint(
+        &mut self,
+        min_width: i32,
+        min_height: i32,
+        max_width: i32,
+        max_height: i32,
+    ) {
+        self.dimensions_hint = DimensionsHint {
+            min_width,
+            min_height,
+            max_width,
+            max_height,
+        };
     }
 
-    /// Compute preferred window dimensions based on explicit dimensions and hints.
-    pub(super) fn preferred_dimensions(&self, fallback: Rect) -> (i32, i32) {
-        let mut width = if self.dimensions.width > 0 {
-            self.dimensions.width
-        } else {
-            fallback.width
-        }
-        .max(1);
-        let mut height = if self.dimensions.height > 0 {
-            self.dimensions.height
-        } else {
-            fallback.height
-        }
-        .max(1);
+    /// Compute preferred window dimensions for a floating / pseudo-tiled window.
+    ///
+    /// The base size is always `ratio` (the `default_float_ratio` config field)
+    /// of `fallback`, with a minimum floor to keep windows usable on tiny
+    /// outputs. The size the compositor imposes on a window via tiling/fullscreen
+    /// is deliberately ignored, so it cannot leak a tiling-slot or fullscreen
+    /// size into the default. The app's genuine request comes only through its
+    /// size hints (`dimensions_hint`), which clamp the ratio-based base below.
+    pub(super) fn preferred_dimensions(&self, fallback: Rect, ratio: f32) -> (i32, i32) {
+        let size_for = |fallback_dim: i32| -> i32 {
+            let raw = (fallback_dim as f32 * ratio).round() as i32;
+            // At least MIN_FLOAT_SIZE, but never larger than the output itself
+            // so a window cannot overflow a tiny output.
+            raw.max(MIN_FLOAT_SIZE).min(fallback_dim.max(1))
+        };
+
+        let mut width = size_for(fallback.width).max(1);
+        let mut height = size_for(fallback.height).max(1);
 
         if self.dimensions_hint.min_width > 0 {
             width = width.max(self.dimensions_hint.min_width);
@@ -211,12 +209,17 @@ impl Window {
     /// The window is centered within `self.layout_rect` when it has already been
     /// arranged (i.e. `layout_rect` is set); otherwise it is centered within
     /// `fallback_rect`. `layout_rect` takes precedence, so `fallback_rect` only
-    /// applies to windows that have not yet been arranged.
-    pub(super) fn pseudo_tiled_rect(&self, fallback_rect: Rect) -> Option<Rect> {
-        let fallback = self.layout_rect.unwrap_or(fallback_rect);
-        let (width, height) = self.preferred_dimensions(fallback);
+    /// applies to windows that have not yet been arranged. `ratio` is the
+    /// default-size fraction used when the window has not reported its dimensions.
+    pub(super) fn pseudo_tiled_rect(&self, fallback_rect: Rect, ratio: f32) -> Rect {
+        // Size is a fraction of the destination output (`fallback_rect`) so the
+        // ratio is not re-applied to an already-arranged `layout_rect`, which
+        // would shrink a previously sized pseudo/floating window on every toggle
+        // or output reassignment. `layout_rect` is used only for centering.
+        let (width, height) = self.preferred_dimensions(fallback_rect, ratio);
         let size = Rect::new(0, 0, width, height);
-        Some(crate::layout::capped_rect(fallback, size))
+        let center_in = self.layout_rect.unwrap_or(fallback_rect);
+        crate::layout::capped_rect(center_in, size)
     }
 
     /// Determine whether this window should use client-side decorations.
@@ -232,5 +235,121 @@ impl Window {
             Some(0) => false,
             _ => fallback_decorations,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preferred_dimensions_ratio_scales_fallback() {
+        let window = Window::new(WindowId(1), OutputId(1));
+        let rect = Rect::new(0, 0, 1000, 800);
+        let (w, h) = window.preferred_dimensions(rect, 0.5);
+        assert_eq!((w, h), (500, 400));
+    }
+
+    #[test]
+    fn preferred_dimensions_min_floor_on_tiny_output() {
+        let window = Window::new(WindowId(1), OutputId(1));
+        // 200x200 fallback with 0.5 ratio would yield 100x100, but MIN_FLOAT_SIZE=320
+        // floors it. The cap also limits to the fallback size.
+        let rect = Rect::new(0, 0, 200, 200);
+        let (w, h) = window.preferred_dimensions(rect, 0.5);
+        assert_eq!((w, h), (200, 200));
+    }
+
+    #[test]
+    fn preferred_dimensions_min_width_hint_overrides_ratio() {
+        let mut window = Window::new(WindowId(1), OutputId(1));
+        window.dimensions_hint.min_width = 500;
+        // 0.1 ratio on 1000-wide fallback gives 100, but min_width forces 500.
+        let rect = Rect::new(0, 0, 1000, 800);
+        let (w, _h) = window.preferred_dimensions(rect, 0.1);
+        assert_eq!(w, 500);
+    }
+
+    #[test]
+    fn preferred_dimensions_max_width_hint_caps_ratio() {
+        let mut window = Window::new(WindowId(1), OutputId(1));
+        window.dimensions_hint.max_width = 200;
+        // 0.5 ratio on 1000-wide fallback gives 500, but max_width caps at 200.
+        let rect = Rect::new(0, 0, 1000, 800);
+        let (w, _h) = window.preferred_dimensions(rect, 0.5);
+        assert_eq!(w, 200);
+    }
+
+    #[test]
+    fn preferred_dimensions_ratio_one_uses_full_fallback() {
+        let window = Window::new(WindowId(1), OutputId(1));
+        let rect = Rect::new(0, 0, 800, 600);
+        let (w, h) = window.preferred_dimensions(rect, 1.0);
+        assert_eq!((w, h), (800, 600));
+    }
+
+    #[test]
+    fn preferred_dimensions_ratio_zero_hits_min_floor() {
+        let window = Window::new(WindowId(1), OutputId(1));
+        let rect = Rect::new(0, 0, 1000, 800);
+        let (w, h) = window.preferred_dimensions(rect, 0.0);
+        assert_eq!((w, h), (320, 320));
+    }
+
+    #[test]
+    fn pseudo_tiled_rect_centers_in_fallback() {
+        let window = Window::new(WindowId(1), OutputId(1));
+        let rect = Rect::new(0, 0, 1000, 800);
+        let r = window.pseudo_tiled_rect(rect, 0.5);
+        // 500x400 window centered in 1000x800 slot.
+        assert_eq!(r, Rect::new(250, 200, 500, 400));
+    }
+
+    #[test]
+    fn pseudo_tiled_rect_centers_in_layout_rect() {
+        let mut window = Window::new(WindowId(1), OutputId(1));
+        window.set_layout_rect(Rect::new(100, 100, 800, 600));
+        let fallback = Rect::new(0, 0, 1000, 800);
+        let r = window.pseudo_tiled_rect(fallback, 0.5);
+        // Ratio-sized 500x400 (from the output fallback), centered inside
+        // layout_rect (which is used only for positioning).
+        assert_eq!(r, Rect::new(250, 200, 500, 400));
+    }
+
+    #[test]
+    fn preferred_dimensions_hints_clamp_ratio_base() {
+        // A window that reports genuine size hints has the ratio-based base
+        // clamped into [min, max] on each axis.
+        let mut window = Window::new(WindowId(1), OutputId(1));
+        window.set_dimensions_hint(600, 0, 0, 300);
+        let rect = Rect::new(0, 0, 1000, 800);
+        // width: base 500 -> min 600 lifts it to 600.
+        // height: base 400 -> max 300 caps it to 300.
+        let (w, h) = window.preferred_dimensions(rect, 0.5);
+        assert_eq!((w, h), (600, 300));
+    }
+
+    #[test]
+    fn pseudo_tiled_rect_caps_size_to_slot() {
+        let window = Window::new(WindowId(1), OutputId(1));
+        // ratio=1.0 on 300x200 fallback gives 300x200, capped_rect keeps it.
+        let rect = Rect::new(0, 0, 300, 200);
+        let r = window.pseudo_tiled_rect(rect, 1.0);
+        assert_eq!(r, Rect::new(0, 0, 300, 200));
+    }
+
+    #[test]
+    fn pseudo_tiled_rect_does_not_rescale_arranged_window() {
+        // A window that has already been arranged (layout_rect set from a
+        // previous manage cycle) must keep its established size when toggled
+        // or reassigned; the ratio must size from the OUTPUT rect, not be
+        // re-applied to the already-ratio-scaled layout_rect.
+        let mut window = Window::new(WindowId(1), OutputId(1));
+        // 500x400 is exactly ratio(0.5) * output(1000x800) — the expected size.
+        window.set_layout_rect(Rect::new(100, 100, 500, 400));
+        let output = Rect::new(0, 0, 1000, 800);
+        let r = window.pseudo_tiled_rect(output, 0.5);
+        // Size must remain 500x400 (not shrink to the MIN_FLOAT_SIZE floor).
+        assert_eq!((r.width, r.height), (500, 400));
     }
 }

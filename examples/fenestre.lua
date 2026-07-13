@@ -5,6 +5,7 @@ return {
         margin_right = 10,
         margin_bottom = 10,
         margin_left = 10,
+        default_float_ratio = 0.5,
     },
 
     decorations = false,

@@ -299,6 +299,7 @@ pub(super) fn build_layout(
     margin_bottom: Option<i32>,
     margin_left: Option<i32>,
     margins: Option<RawMargins>,
+    default_float_ratio: Option<f32>,
 ) -> LayoutConfig {
     match margins {
         Some(m) => LayoutConfig {
@@ -307,6 +308,7 @@ pub(super) fn build_layout(
             margin_right: m.right.or(margin_right),
             margin_bottom: m.bottom.or(margin_bottom),
             margin_left: m.left.or(margin_left),
+            default_float_ratio,
         },
         None => LayoutConfig {
             gap,
@@ -314,6 +316,7 @@ pub(super) fn build_layout(
             margin_right,
             margin_bottom,
             margin_left,
+            default_float_ratio,
         },
     }
 }

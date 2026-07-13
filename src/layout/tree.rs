@@ -1887,6 +1887,7 @@ mod tests {
             margin_right: Some(10),
             margin_bottom: Some(5),
             margin_left: Some(10),
+            default_float_ratio: None,
         });
 
         layout.insert_window(1);

@@ -131,7 +131,7 @@ impl WMState {
     }
 
     /// Toggle floating state for the focused window.
-    fn toggle_focused_floating(&mut self) {
+    pub(super) fn toggle_focused_floating(&mut self) {
         let Some(window_id) = self.focused_window else {
             return;
         };
@@ -149,7 +149,7 @@ impl WMState {
     }
 
     /// Toggle pseudo-tiled state for the focused window.
-    fn toggle_focused_pseudo_tiled(&mut self) {
+    pub(super) fn toggle_focused_pseudo_tiled(&mut self) {
         let Some(window_id) = self.focused_window else {
             return;
         };
@@ -185,21 +185,44 @@ impl WMState {
     }
 
     /// Resolve the geometry rectangle to use when toggling window state.
-    fn resolve_toggle_rect(&self, window_id: WindowId) -> Option<crate::layout::Rect> {
+    fn resolve_toggle_rect(&mut self, window_id: WindowId) -> Option<crate::layout::Rect> {
+        let float_ratio = self.default_float_ratio();
         let window = self.windows.get(&window_id)?;
         let output_rect = self
             .outputs
             .get(&window.output_id)
             .and_then(|o| o.rect())
             .unwrap_or(crate::layout::Rect::new(0, 0, 0, 0));
-        match window.mode {
-            super::window::WindowMode::Floating {
-                x,
-                y,
-                width,
-                height,
-            } => Some(crate::layout::Rect::new(x, y, width, height)),
-            _ => window.pseudo_tiled_rect(output_rect),
+        let pseudo_rect = window.pseudo_tiled_rect(output_rect, float_ratio);
+
+        // The tree is authoritative for the window's current state and its float
+        // geometry; read both from it rather than the window's cached `mode`.
+        let (state, floating_rect) = match self.focused_tree() {
+            Some(tree) => (
+                tree.window_state(window_id.0),
+                tree.window_floating_rect(window_id.0),
+            ),
+            None => (None, None),
+        };
+
+        match state {
+            // Keep the window's existing floating rect.
+            Some(crate::layout::WindowState::Floating) => {
+                Some(floating_rect.unwrap_or(pseudo_rect))
+            }
+            // Restore the pre-fullscreen float/pseudo geometry, which the tree
+            // preserves across a fullscreen round-trip. Toggling back overwrites
+            // `floating_rect` with the rect we return here, so falling through to
+            // the ratio-based `pseudo_rect` would replace the window's prior
+            // position and size. When no float geometry was ever stored (e.g. a
+            // window fullscreened straight from tiled, whose rect is the
+            // zero-initialized default), fall back to `pseudo_rect`.
+            Some(crate::layout::WindowState::Fullscreen) => Some(
+                floating_rect
+                    .filter(|r| r.width > 0 && r.height > 0)
+                    .unwrap_or(pseudo_rect),
+            ),
+            _ => Some(pseudo_rect),
         }
     }
 

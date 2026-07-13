@@ -268,6 +268,7 @@ impl WMState {
         let Some(output_rect) = self.outputs.get(&output_id).and_then(|o| o.rect()) else {
             return;
         };
+        let float_ratio = self.default_float_ratio();
         let Some(tree) = self.output_trees.get_mut(&output_id) else {
             return;
         };
@@ -279,7 +280,7 @@ impl WMState {
             self.window_rules
                 .as_ref()
                 .unwrap()
-                .evaluate(window, tree, output_rect)
+                .evaluate(window, tree, output_rect, float_ratio)
         };
 
         if changed && let Some(wm) = &self.wm {
@@ -375,7 +376,7 @@ impl WMState {
     }
 
     /// Rebuild the destination tree by re-inserting the moved windows and
-    /// re-deriving their modes from `WindowMode`, adapting splits to the
+    /// re-deriving their modes from the tree's `WindowState`, adapting splits to the
     /// destination geometry. Used when the destination output already has real
     /// dimensions. Returns the destination tree's focus before the move so the
     /// caller can restore it.
@@ -388,6 +389,8 @@ impl WMState {
         dy: i32,
         to_rect: Rect,
     ) -> Option<u32> {
+        let float_ratio = self.default_float_ratio();
+
         // Plan describing the layout state each moved window must return to on
         // the destination tree.
         #[derive(Clone, Copy)]
@@ -396,50 +399,56 @@ impl WMState {
             Floating(Rect),
             PseudoTiled(Rect),
             FullscreenTiled,
-            FullscreenPseudo(Option<Rect>),
-            FullscreenFloating(Option<Rect>),
+            FullscreenPseudo(Rect),
+            FullscreenFloating(Rect),
         }
 
         let mut plans = HashMap::new();
         for win_id in window_ids {
             if let Some(window) = self.windows.get(&WindowId(*win_id)) {
-                let pseudo_rect = window.pseudo_tiled_rect(to_rect);
-                let plan = match window.mode {
-                    super::window::WindowMode::Floating {
-                        x,
-                        y,
-                        width,
-                        height,
-                    } => ReassignPlan::Floating(crate::layout::Rect::new(
-                        x.saturating_add(dx),
-                        y.saturating_add(dy),
-                        width,
-                        height,
-                    )),
-                    super::window::WindowMode::PseudoTiled => ReassignPlan::PseudoTiled(
-                        pseudo_rect.expect("pseudo_tiled_rect always returns Some"),
-                    ),
-                    super::window::WindowMode::Fullscreen => {
+                let pseudo_rect = window.pseudo_tiled_rect(to_rect, float_ratio);
+                // Derive the plan from the authoritative tree state rather than
+                // the window's cached `mode`; float geometry comes from the
+                // node's `floating_rect`.
+                let plan = match from_tree.window_state(*win_id) {
+                    Some(crate::layout::WindowState::Floating) => {
+                        let r = from_tree
+                            .window_floating_rect(*win_id)
+                            .expect("window_floating_rect always returns Some for window in tree");
+                        ReassignPlan::Floating(crate::layout::Rect::new(
+                            r.x.saturating_add(dx),
+                            r.y.saturating_add(dy),
+                            r.width,
+                            r.height,
+                        ))
+                    }
+                    Some(crate::layout::WindowState::PseudoTiled) => {
+                        ReassignPlan::PseudoTiled(pseudo_rect)
+                    }
+                    Some(crate::layout::WindowState::Fullscreen) => {
                         match from_tree.window_base_state(*win_id) {
                             Some(crate::layout::WindowState::PseudoTiled) => {
                                 ReassignPlan::FullscreenPseudo(pseudo_rect)
                             }
                             Some(crate::layout::WindowState::Floating) => {
                                 ReassignPlan::FullscreenFloating(
-                                    from_tree.window_floating_rect(*win_id).map(|r| {
-                                        crate::layout::Rect::new(
-                                            r.x.saturating_add(dx),
-                                            r.y.saturating_add(dy),
-                                            r.width,
-                                            r.height,
-                                        )
-                                    }),
+                                    from_tree
+                                        .window_floating_rect(*win_id)
+                                        .map(|r| {
+                                            crate::layout::Rect::new(
+                                                r.x.saturating_add(dx),
+                                                r.y.saturating_add(dy),
+                                                r.width,
+                                                r.height,
+                                            )
+                                        })
+                                        .expect("window_floating_rect always returns Some for window in tree"),
                                 )
                             }
                             _ => ReassignPlan::FullscreenTiled,
                         }
                     }
-                    super::window::WindowMode::Tiled => ReassignPlan::Tiled,
+                    Some(crate::layout::WindowState::Tiled) | None => ReassignPlan::Tiled,
                 };
                 plans.insert(*win_id, plan);
             }
@@ -464,15 +473,11 @@ impl WMState {
                         let _ = to_tree.toggle_fullscreen(*win_id);
                     }
                     ReassignPlan::FullscreenPseudo(rect) => {
-                        if let Some(r) = rect {
-                            let _ = to_tree.toggle_pseudo_tiled(*win_id, r);
-                        }
+                        let _ = to_tree.toggle_pseudo_tiled(*win_id, rect);
                         let _ = to_tree.toggle_fullscreen(*win_id);
                     }
                     ReassignPlan::FullscreenFloating(rect) => {
-                        if let Some(r) = rect {
-                            let _ = to_tree.toggle_floating(*win_id, r);
-                        }
+                        let _ = to_tree.toggle_floating(*win_id, rect);
                         let _ = to_tree.toggle_fullscreen(*win_id);
                     }
                 }
@@ -505,6 +510,15 @@ impl WMState {
         // overwriting it would silently drop them.
         self.output_trees.entry(to).or_insert(from_tree);
         remembered
+    }
+
+    /// Default floating / pseudo-tiled size fraction for windows that have not
+    /// reported their own dimensions.
+    pub(crate) fn default_float_ratio(&self) -> f32 {
+        self.config
+            .as_ref()
+            .and_then(|c| c.layout.default_float_ratio)
+            .unwrap_or(0.5)
     }
 
     /// Mark River window-manager state as dirty.
@@ -547,39 +561,28 @@ impl WMState {
                     }
                     match state {
                         crate::layout::WindowState::Tiled
-                        | crate::layout::WindowState::Floating => {
-                            if window.mode == super::window::WindowMode::Fullscreen {
+                        | crate::layout::WindowState::Floating
+                        | crate::layout::WindowState::PseudoTiled => {
+                            if window.mode == crate::layout::WindowState::Fullscreen {
                                 river_window.exit_fullscreen();
                             }
+                            // Propose the arranged rect directly. Do NOT route this
+                            // through `preferred_dimensions`: it would reuse a stale
+                            // reported size (e.g. the fullscreen dimensions an app
+                            // reports while fullscreened) after a fullscreen
+                            // round-trip.
                             river_window.propose_dimensions(window_rect.width, window_rect.height);
                         }
-                        crate::layout::WindowState::PseudoTiled => {
-                            if window.mode == super::window::WindowMode::Fullscreen {
-                                river_window.exit_fullscreen();
-                            }
-                            let (width, height) = window.preferred_dimensions(window_rect);
-                            river_window.propose_dimensions(width, height);
-                        }
                         crate::layout::WindowState::Fullscreen => {
-                            if window.mode != super::window::WindowMode::Fullscreen {
+                            if window.mode != crate::layout::WindowState::Fullscreen {
                                 river_window.fullscreen(output_proxy);
                             }
                         }
                     }
                 }
-                window.mode = match state {
-                    crate::layout::WindowState::Tiled => super::window::WindowMode::Tiled,
-                    crate::layout::WindowState::PseudoTiled => {
-                        super::window::WindowMode::PseudoTiled
-                    }
-                    crate::layout::WindowState::Floating => super::window::WindowMode::Floating {
-                        x: window_rect.x,
-                        y: window_rect.y,
-                        width: window_rect.width,
-                        height: window_rect.height,
-                    },
-                    crate::layout::WindowState::Fullscreen => super::window::WindowMode::Fullscreen,
-                };
+                // Record the state we just applied so the next manage cycle can
+                // detect fullscreen enter/leave transitions.
+                window.mode = state;
             }
         }
 
@@ -652,8 +655,7 @@ impl WMState {
                 node.set_position(rect.x, rect.y);
                 if matches!(
                     window.mode,
-                    super::window::WindowMode::Floating { .. }
-                        | super::window::WindowMode::Fullscreen
+                    crate::layout::WindowState::Floating | crate::layout::WindowState::Fullscreen
                 ) {
                     node.place_top();
                 }
@@ -957,9 +959,9 @@ fn render_stack_priority(
         return (0, 0, 0);
     };
     let mode_priority = match window.mode {
-        super::window::WindowMode::Tiled | super::window::WindowMode::PseudoTiled => 0,
-        super::window::WindowMode::Floating { .. } => 1,
-        super::window::WindowMode::Fullscreen => 2,
+        crate::layout::WindowState::Tiled | crate::layout::WindowState::PseudoTiled => 0,
+        crate::layout::WindowState::Floating => 1,
+        crate::layout::WindowState::Fullscreen => 2,
     };
     let focus_priority = if focused_window == Some(window.id) {
         1
@@ -1412,7 +1414,7 @@ mod tests {
         tree.toggle_pseudo_tiled(w1.0, rect);
         tree.toggle_fullscreen(w1.0);
         // Mirror the layout state into the window record, as `apply_manage` does.
-        state.windows.get_mut(&w1).unwrap().mode = crate::state::window::WindowMode::Fullscreen;
+        state.windows.get_mut(&w1).unwrap().mode = crate::layout::WindowState::Fullscreen;
 
         state.reassign_output(o1, o2);
 
@@ -1841,5 +1843,122 @@ mod tests {
         assert_eq!(state.focused_window, Some(b));
         assert_eq!(state.focused_output, Some(o2));
         assert_eq!(state.focused_tree().unwrap().focused_window(), Some(b.0));
+    }
+
+    /// Build a state with one pseudo-tiled window that has round-tripped through
+    /// fullscreen (app reported fullscreen dimensions). Returns the state, the
+    /// output id, the window id, and the original pseudo-tiled width.
+    fn setup_pseudo_fullscreen_roundtrip() -> (WMState, OutputId, WindowId, i32) {
+        let mut state = WMState::new();
+        let o = OutputId(1);
+        let mut out = Output::new(o);
+        out.set_dimensions(1920, 1080);
+        state.outputs.insert(o, out);
+        state.focused_output = Some(o);
+
+        let w = WindowId(1);
+        state.windows.insert(w, Window::new(w, o));
+        state.tree_for_output(o).unwrap().insert_window(w.0);
+        state.focused_window = Some(w);
+
+        // Spawn pseudo-tiled at the output fraction.
+        let output_rect = crate::layout::Rect::new(0, 0, 1920, 1080);
+        let ratio = state.default_float_ratio();
+        let pseudo = state
+            .windows
+            .get(&w)
+            .unwrap()
+            .pseudo_tiled_rect(output_rect, ratio);
+        let pseudo_w = pseudo.width;
+        state.tree_for_output(o).unwrap().set_window_state(
+            w.0,
+            crate::layout::WindowState::PseudoTiled,
+            pseudo,
+        );
+        state.windows.get_mut(&w).unwrap().mode = crate::layout::WindowState::PseudoTiled;
+
+        // Round-trip through fullscreen. (The app-reported size while
+        // fullscreened is no longer stored on the window, so there is nothing to
+        // set here; the pseudo size must be preserved via the tree's stored rect.)
+        state.tree_for_output(o).unwrap().toggle_fullscreen(w.0);
+        state.windows.get_mut(&w).unwrap().mode = crate::layout::WindowState::Fullscreen;
+
+        (state, o, w, pseudo_w)
+    }
+
+    #[test]
+    fn pseudo_tiled_after_fullscreen_keeps_pseudo_size() {
+        // Regression: after a fullscreen round-trip, a pseudo-tiled window must
+        // keep its pseudo size, not reuse the fullscreen dimensions the app
+        // reported while fullscreened. `apply_manage` proposes the arranged
+        // `window_rect` directly for pseudo-tiled windows, which stays correct
+        // because the pseudo `floating_rect` is preserved across the toggle.
+        let (mut state, o, w2, pseudo_w) = setup_pseudo_fullscreen_roundtrip();
+
+        // Toggle fullscreen back -> pseudo.
+        state.tree_for_output(o).unwrap().toggle_fullscreen(w2.0);
+        state.windows.get_mut(&w2).unwrap().mode = crate::layout::WindowState::PseudoTiled;
+
+        // The arranged pseudo rect must be the original pseudo size, not the
+        // stale fullscreen dimensions.
+        let (_, window_rect, state_w2) = state
+            .tree_for_output(o)
+            .unwrap()
+            .arranged_windows()
+            .into_iter()
+            .find(|(id, _, _)| *id == w2.0)
+            .unwrap();
+        assert_eq!(state_w2, crate::layout::WindowState::PseudoTiled);
+        assert_eq!(
+            window_rect.width, pseudo_w,
+            "pseudo window reused stale fullscreen dimensions"
+        );
+    }
+
+    #[test]
+    fn toggle_from_fullscreen_to_float_keeps_float_size() {
+        // Regression: a window toggled straight from fullscreen to floating must
+        // restore its pre-fullscreen (output-fraction) size, not reuse the
+        // fullscreen dimensions the app reports while fullscreened. This covers
+        // the `resolve_toggle_rect` path that `apply_manage` does not.
+        let (mut state, _o, w, pseudo_w) = setup_pseudo_fullscreen_roundtrip();
+
+        // Toggle directly to floating from fullscreen.
+        state.toggle_focused_floating();
+
+        let (_, window_rect, state_w) = state
+            .tree_for_output(_o)
+            .unwrap()
+            .arranged_windows()
+            .into_iter()
+            .find(|(id, _, _)| *id == w.0)
+            .unwrap();
+        assert_eq!(state_w, crate::layout::WindowState::Floating);
+        assert_eq!(
+            window_rect.width, pseudo_w,
+            "float toggled from fullscreen reused stale fullscreen dimensions"
+        );
+    }
+
+    #[test]
+    fn toggle_from_fullscreen_to_pseudo_keeps_pseudo_size() {
+        // Same regression as above, but toggling to pseudo-tiled directly from
+        // fullscreen instead of floating.
+        let (mut state, _o, w, pseudo_w) = setup_pseudo_fullscreen_roundtrip();
+
+        state.toggle_focused_pseudo_tiled();
+
+        let (_, window_rect, state_w) = state
+            .tree_for_output(_o)
+            .unwrap()
+            .arranged_windows()
+            .into_iter()
+            .find(|(id, _, _)| *id == w.0)
+            .unwrap();
+        assert_eq!(state_w, crate::layout::WindowState::PseudoTiled);
+        assert_eq!(
+            window_rect.width, pseudo_w,
+            "pseudo toggled from fullscreen reused stale fullscreen dimensions"
+        );
     }
 }

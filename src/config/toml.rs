@@ -3,7 +3,7 @@
 //! This module is intentionally TOML-specific. It converts TOML values into
 //! the shared config types defined in `config::mod`, mirroring the Lua loader
 //! in `lua.rs` and reusing the format-neutral helpers in `parser`.
-use super::{Config, ConfigError, KeyBindingConfig, LayoutConfig, Result, parser};
+use super::{Config, ConfigError, KeyBindingConfig, LayoutConfig, Result, parser, validate_ratio};
 use crate::layout::Rect;
 use crate::state::rule::WindowRule;
 use std::path::Path;
@@ -159,6 +159,10 @@ fn parse_layout(value: &::toml::Value) -> Result<LayoutConfig> {
     let margin_right = opt_i32(table, "margin_right")?;
     let margin_bottom = opt_i32(table, "margin_bottom")?;
     let margin_left = opt_i32(table, "margin_left")?;
+    let default_float_ratio = validate_ratio(
+        "default_float_ratio",
+        opt_f32(table, "default_float_ratio")?,
+    )?;
 
     let margins = match table.get("margins") {
         Some(::toml::Value::Table(margins)) => Ok(Some(parser::RawMargins {
@@ -180,6 +184,7 @@ fn parse_layout(value: &::toml::Value) -> Result<LayoutConfig> {
         margin_bottom,
         margin_left,
         margins,
+        default_float_ratio,
     ))
 }
 

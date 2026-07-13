@@ -77,6 +77,7 @@ impl WindowRules {
         window: &mut super::window::Window,
         tree: &mut crate::layout::LayoutTree,
         fallback_rect: Rect,
+        ratio: f32,
     ) -> bool {
         if window.rules_applied {
             return false;
@@ -91,7 +92,6 @@ impl WindowRules {
 
         let mut applied = false;
         let mut last_target = crate::layout::WindowState::Tiled;
-        let mut last_rect = Rect::new(0, 0, 0, 0);
         for rule in &self.rules {
             if rule.is_pending_metadata(app_id, title) {
                 continue;
@@ -100,14 +100,11 @@ impl WindowRules {
                 continue;
             }
 
-            let rect = rule.floating_rect.unwrap_or_else(|| {
-                window
-                    .pseudo_tiled_rect(fallback_rect)
-                    .unwrap_or_else(|| Rect::new(0, 0, 0, 0))
-            });
+            let rect = rule
+                .floating_rect
+                .unwrap_or_else(|| window.pseudo_tiled_rect(fallback_rect, ratio));
             tree.set_window_state(window.id.0, rule.target, rect);
             last_target = rule.target;
-            last_rect = rect;
             applied = true;
         }
 
@@ -134,17 +131,7 @@ impl WindowRules {
 
         // Sync the persistent mode so reassign / toggle paths stay consistent
         // with the tree.
-        window.mode = match last_target {
-            crate::layout::WindowState::Floating => super::window::WindowMode::Floating {
-                x: last_rect.x,
-                y: last_rect.y,
-                width: last_rect.width,
-                height: last_rect.height,
-            },
-            crate::layout::WindowState::Fullscreen => super::window::WindowMode::Fullscreen,
-            crate::layout::WindowState::PseudoTiled => super::window::WindowMode::PseudoTiled,
-            crate::layout::WindowState::Tiled => super::window::WindowMode::Tiled,
-        };
+        window.mode = last_target;
 
         let after_state = tree.window_state(window.id.0);
         let after_rect = tree.window_floating_rect(window.id.0);
@@ -287,7 +274,7 @@ mod tests {
             None,
             WindowState::Floating,
         )]);
-        assert!(!rules.evaluate(&mut window, &mut tree, Rect::new(0, 0, 1920, 1080)));
+        assert!(!rules.evaluate(&mut window, &mut tree, Rect::new(0, 0, 1920, 1080), 0.5));
     }
 
     #[test]
@@ -317,7 +304,7 @@ mod tests {
             ),
         ]);
 
-        assert!(rules.evaluate(&mut window, &mut tree, Rect::new(0, 0, 1920, 1080)));
+        assert!(rules.evaluate(&mut window, &mut tree, Rect::new(0, 0, 1920, 1080), 0.5));
         assert!(window.rules_applied);
         assert_eq!(tree.window_base_state(1), Some(WindowState::Tiled));
         assert_eq!(tree.window_state(1), Some(WindowState::Floating));
@@ -348,13 +335,13 @@ mod tests {
         ]);
 
         // app_id known, title missing: general rule applies, not finalized yet.
-        assert!(rules.evaluate(&mut window, &mut tree, Rect::new(0, 0, 1920, 1080)));
+        assert!(rules.evaluate(&mut window, &mut tree, Rect::new(0, 0, 1920, 1080), 0.5));
         assert!(!window.rules_applied);
         assert_eq!(tree.window_base_state(1), Some(WindowState::Tiled));
 
         // Title arrives: re-evaluation lets the later, specific rule override.
         window.title = Some("Library".to_string());
-        assert!(rules.evaluate(&mut window, &mut tree, Rect::new(0, 0, 1920, 1080)));
+        assert!(rules.evaluate(&mut window, &mut tree, Rect::new(0, 0, 1920, 1080), 0.5));
         assert!(window.rules_applied);
         assert_eq!(tree.window_base_state(1), Some(WindowState::Tiled));
         assert_eq!(tree.window_state(1), Some(WindowState::Floating));

@@ -251,15 +251,15 @@ impl Dispatch<RiverWindowV1, ()> for WMState {
                     max_width,
                     max_height
                 );
+                if let Some((_, window)) = state.find_window_mut_by_proxy(proxy) {
+                    window.set_dimensions_hint(min_width, min_height, max_width, max_height);
+                }
             }
             Event::Dimensions { width, height } => {
                 debug!(
                     target: "fenestre::state::handlers",
                     "RiverWindowV1 event: Dimensions updated to ({width}, {height})"
                 );
-                if let Some((_, window)) = state.find_window_mut_by_proxy(proxy) {
-                    window.set_dimensions(width, height);
-                }
             }
             Event::AppId { app_id } => {
                 debug!(
