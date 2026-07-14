@@ -4,19 +4,14 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
+use super::effects::Effect;
+use super::events::Event;
 use super::keybindings::{KeyBinding, XkbBindingId};
 use super::output::{Output, OutputId};
 use super::seat::{Seat, SeatId};
 use super::window::{Window, WindowId};
 use crate::config::Config;
 use crate::layout::{LayoutTree, Rect};
-use crate::protocol::river::river_window_management_v1::client::river_output_v1::RiverOutputV1;
-use crate::protocol::river::river_window_management_v1::client::river_seat_v1::RiverSeatV1;
-use crate::protocol::river::river_window_management_v1::client::river_window_manager_v1::RiverWindowManagerV1;
-use crate::protocol::river::river_window_management_v1::client::river_window_v1::Edges;
-use crate::protocol::river::river_window_management_v1::client::river_window_v1::RiverWindowV1;
-use crate::protocol::river::river_xkb_bindings_v1::client::river_xkb_binding_v1::RiverXkbBindingV1;
-use crate::protocol::river::river_xkb_bindings_v1::client::river_xkb_bindings_v1::RiverXkbBindingsV1;
 use log::debug;
 use wayland_client::QueueHandle;
 
@@ -29,8 +24,8 @@ use wayland_client::QueueHandle;
 /// Protocol event handlers mutate this state. Configuration reconciliation updates
 /// runtime keybindings and queues window-rule reapplication.
 pub(crate) struct WMState {
-    pub(super) wm: Option<RiverWindowManagerV1>,
-    pub(super) xkb_bindings: Option<RiverXkbBindingsV1>,
+    pub(super) wm: Option<crate::protocol::river::river_window_management_v1::client::river_window_manager_v1::RiverWindowManagerV1>,
+    pub(super) xkb_bindings: Option<crate::protocol::river::river_xkb_bindings_v1::client::river_xkb_bindings_v1::RiverXkbBindingsV1>,
     pub(super) config: Option<Config>,
     pub(super) config_path: Option<PathBuf>,
 
@@ -49,7 +44,7 @@ pub(crate) struct WMState {
     /// True when desired xkb bindings differ from configured River binding objects.
     pub(super) xkb_bindings_dirty: bool,
     /// River xkb binding protocol objects queued for destruction during the next manage sequence.
-    pub(super) pending_xkb_binding_destroys: Vec<RiverXkbBindingV1>,
+    pub(super) pending_xkb_binding_destroys: Vec<crate::protocol::river::river_xkb_bindings_v1::client::river_xkb_binding_v1::RiverXkbBindingV1>,
     /// Window rules loaded from config, applied per-window when metadata is known.
     pub(super) window_rules: Option<super::rule::WindowRules>,
     /// Window ID to focus during the next manage sequence.
@@ -67,9 +62,9 @@ pub(crate) struct WMState {
     next_xkb_binding_id: XkbBindingId,
 
     /// Proxy-to-ID indexes for O(1) lookup by Wayland object.
-    pub(super) windows_by_proxy: HashMap<RiverWindowV1, WindowId>,
-    pub(super) outputs_by_proxy: HashMap<RiverOutputV1, OutputId>,
-    pub(super) seats_by_proxy: HashMap<RiverSeatV1, SeatId>,
+    pub(super) windows_by_proxy: HashMap<crate::protocol::river::river_window_management_v1::client::river_window_v1::RiverWindowV1, WindowId>,
+    pub(super) outputs_by_proxy: HashMap<crate::protocol::river::river_window_management_v1::client::river_output_v1::RiverOutputV1, OutputId>,
+    pub(super) seats_by_proxy: HashMap<crate::protocol::river::river_window_management_v1::client::river_seat_v1::RiverSeatV1, SeatId>,
 
     /// Windows grouped by output for O(1) lookup of which windows belong to
     /// a given output. Currently keyed by `OutputId`; if River exposes a
@@ -240,25 +235,11 @@ impl WMState {
         self.tree_for_output(focused_output)
     }
 
-    /// Resolve a River window proxy to its per-output `LayoutTree`.
-    pub(super) fn tree_for_window_proxy(
-        &mut self,
-        proxy: &RiverWindowV1,
-    ) -> Option<(WindowId, &mut LayoutTree)> {
-        let window_id = self.windows_by_proxy.get(proxy).copied()?;
-        let output_id = self.windows.get(&window_id)?.output_id;
-        let tree = self.tree_for_output(output_id)?;
-        Some((window_id, tree))
-    }
-
-    /// Run window rules against a newly updated window proxy.
+    /// Run window rules against a newly updated window.
     ///
-    /// Called from `Handlers` when metadata arrives so rules can match as
+    /// Called from `handle_event` when metadata arrives so rules can match as
     /// soon as identifiers are known.
-    pub(super) fn evaluate_window_rules(&mut self, proxy: &RiverWindowV1) {
-        let Some(window_id) = self.windows_by_proxy.get(proxy).copied() else {
-            return;
-        };
+    pub(super) fn evaluate_window_rules(&mut self, window_id: WindowId) {
         let Some(output_id) = self.windows.get(&window_id).map(|w| w.output_id) else {
             return;
         };
@@ -286,6 +267,63 @@ impl WMState {
         if changed && let Some(wm) = &self.wm {
             wm.manage_dirty();
         }
+    }
+
+    /// Resolve a window ID to its per-output `LayoutTree`.
+    pub(super) fn tree_for_window_id(
+        &mut self,
+        window_id: WindowId,
+    ) -> Option<(WindowId, &mut LayoutTree)> {
+        let output_id = self.windows.get(&window_id)?.output_id;
+        let tree = self.tree_for_output(output_id)?;
+        Some((window_id, tree))
+    }
+
+    /// Find an output by internal ID.
+    pub(super) fn find_output_mut_by_proxy_id(
+        &mut self,
+        output_id: OutputId,
+    ) -> Option<(OutputId, &mut Output)> {
+        self.outputs
+            .get_mut(&output_id)
+            .map(|output| (output_id, output))
+    }
+
+    /// Find a seat by internal ID.
+    pub(super) fn find_seat_mut_by_id(&mut self, seat_id: SeatId) -> Option<(SeatId, &mut Seat)> {
+        self.seats.get_mut(&seat_id).map(|seat| (seat_id, seat))
+    }
+
+    /// Remove an output by internal ID.
+    pub(super) fn remove_output_by_id(
+        &mut self,
+        output_id: OutputId,
+        fallback_output: Option<OutputId>,
+    ) -> Option<OutputId> {
+        let removed_was_focused = self.focused_output == Some(output_id);
+        self.outputs.remove(&output_id);
+
+        if removed_was_focused {
+            self.focused_output = fallback_output.or_else(|| self.outputs.keys().next().copied());
+        }
+
+        Some(output_id)
+    }
+
+    /// Remove a seat by internal ID.
+    pub(super) fn remove_seat_by_id(&mut self, seat_id: SeatId) -> Option<SeatId> {
+        let removed_was_current = self.current_seat == Some(seat_id);
+        self.seats.remove(&seat_id);
+
+        if removed_was_current
+            || self
+                .current_seat
+                .is_some_and(|current| !self.seats.contains_key(&current))
+        {
+            self.current_seat = self.seats.first_key_value().map(|(id, _)| *id);
+        }
+
+        Some(seat_id)
     }
 
     /// Move all windows from one output's tree into another output's tree.
@@ -532,16 +570,14 @@ impl WMState {
     }
 
     /// Apply pending BSP layout and window-management requests in a manage sequence.
-    pub(super) fn apply_manage(&mut self, _qh: &QueueHandle<Self>) {
+    pub(super) fn apply_manage(&mut self, _qh: &QueueHandle<Self>) -> Vec<Effect> {
         self.ensure_focused_output();
 
         let decorations = self.config.as_ref().map(|c| c.decorations).unwrap_or(true);
+        let mut effects = Vec::new();
 
         for (output_id, tree) in self.output_trees.iter_mut() {
             let Some(output) = self.outputs.get(output_id) else {
-                continue;
-            };
-            let Some(output_proxy) = output.river_output.as_ref() else {
                 continue;
             };
             if let Some(rect) = output.rect() {
@@ -555,69 +591,65 @@ impl WMState {
                 };
 
                 window.set_layout_rect(window_rect);
-                if let Some(river_window) = window.river_window.as_ref() {
+                if window.river_window.is_some() {
                     if !window.use_client_decorations(decorations) {
-                        river_window.use_ssd();
+                        effects.push(Effect::UseSsd { window_id });
                     }
                     match state {
                         crate::layout::WindowState::Tiled
                         | crate::layout::WindowState::Floating
                         | crate::layout::WindowState::PseudoTiled => {
                             if window.mode == crate::layout::WindowState::Fullscreen {
-                                river_window.exit_fullscreen();
+                                effects.push(Effect::ExitFullscreen { window_id });
                             }
-                            // Propose the arranged rect directly. Do NOT route this
-                            // through `preferred_dimensions`: it would reuse a stale
-                            // reported size (e.g. the fullscreen dimensions an app
-                            // reports while fullscreened) after a fullscreen
-                            // round-trip.
-                            river_window.propose_dimensions(window_rect.width, window_rect.height);
+                            effects.push(Effect::ProposeDimensions {
+                                window_id,
+                                width: window_rect.width,
+                                height: window_rect.height,
+                            });
                         }
                         crate::layout::WindowState::Fullscreen => {
                             if window.mode != crate::layout::WindowState::Fullscreen {
-                                river_window.fullscreen(output_proxy);
+                                effects.push(Effect::Fullscreen {
+                                    window_id,
+                                    output_id: *output_id,
+                                });
                             }
                         }
                     }
                 }
-                // Record the state we just applied so the next manage cycle can
-                // detect fullscreen enter/leave transitions.
                 window.mode = state;
             }
         }
 
         self.render_order_cache.clear();
 
-        // Keep pending_focus queued until the focus can actually be applied.
-        // Seat creation requests another manage sequence, which will retry the
-        // pending focus. We only clear `pending_focus` when the seat issued the
-        // River focus request for real; if the seat or window proxy is missing
-        // the request is silently dropped by `Seat::focus_window` and we must
-        // keep `pending_focus` so the next manage sequence retries it.
         if let Some(window_id) = self.pending_focus {
             if !self.windows.contains_key(&window_id) {
                 self.pending_focus = None;
             } else if let Some(seat_id) = self.current_seat
                 && let Some(seat) = self.seats.get(&seat_id)
                 && let Some(window) = self.windows.get(&window_id)
-                && seat.focus_window(window)
+                && seat.river_seat.is_some()
+                && window.river_window.is_some()
             {
                 self.pending_focus = None;
+                effects.push(Effect::FocusWindow { window_id });
             }
         }
 
         let pending_closes = std::mem::take(&mut self.pending_closes);
         for window_id in pending_closes {
-            if let Some((_, window)) = self.find_window_mut_by_id(window_id)
-                && let Some(river_window) = window.river_window.as_ref()
-            {
-                river_window.close();
+            if self.windows.contains_key(&window_id) {
+                effects.push(Effect::Close { window_id });
             }
         }
+
+        effects
     }
 
     /// Apply pending render-state requests in a render sequence.
-    pub(super) fn apply_render(&mut self, qh: &QueueHandle<Self>) {
+    pub(super) fn apply_render(&mut self, qh: &QueueHandle<Self>) -> Vec<Effect> {
         if self.render_order_cache.is_empty() {
             self.update_render_order_cache();
         }
@@ -635,10 +667,8 @@ impl WMState {
             .map(|c| c.border_rgba())
             .unwrap_or(((0xff, 0xff, 0xff, 0xff), (0xff, 0xff, 0xff, 0xff)));
 
-        // Per-window border cache keyed on (width, effective_color).
-        // Cached state is invalidated when a window switches between
-        // client-side and server-side decorations so stale compositor
-        // borders are not left behind.
+        let mut effects = Vec::new();
+
         for window_id in &self.render_order_cache {
             let Some(window) = self.windows.get_mut(window_id) else {
                 continue;
@@ -651,13 +681,19 @@ impl WMState {
                 window.node = Some(river_window.get_node(qh, ()));
             }
 
-            if let (Some(node), Some(rect)) = (window.node.as_ref(), window.layout_rect) {
-                node.set_position(rect.x, rect.y);
+            if let (Some(_node), Some(rect)) = (window.node.as_ref(), window.layout_rect) {
+                effects.push(Effect::SetPosition {
+                    window_id: *window_id,
+                    x: rect.x,
+                    y: rect.y,
+                });
                 if matches!(
                     window.mode,
                     crate::layout::WindowState::Floating | crate::layout::WindowState::Fullscreen
                 ) {
-                    node.place_top();
+                    effects.push(Effect::PlaceTop {
+                        window_id: *window_id,
+                    });
                 }
             }
 
@@ -684,13 +720,19 @@ impl WMState {
                     rgba_unfocused
                 };
 
-                if border_width > 0 {
-                    river_window.set_borders(Edges::all(), border_width, r, g, b, a);
-                } else {
-                    river_window.set_borders(Edges::empty(), 0, 0, 0, 0, 0);
-                }
+                effects.push(Effect::SetBorders {
+                    window_id: *window_id,
+                    edges: super::effects::ALL_EDGES,
+                    width: border_width,
+                    r,
+                    g,
+                    b,
+                    a,
+                });
             }
         }
+
+        effects
     }
 
     /// Rebuild the cached render order based on current window states.
@@ -726,15 +768,6 @@ impl WMState {
         output.rect()
     }
 
-    /// Find an output by its River output proxy.
-    pub(super) fn find_output_mut_by_proxy(
-        &mut self,
-        proxy: &RiverOutputV1,
-    ) -> Option<(OutputId, &mut Output)> {
-        let id = *self.outputs_by_proxy.get(proxy)?;
-        self.outputs.get_mut(&id).map(|output| (id, output))
-    }
-
     /// Find a window by internal ID.
     pub(super) fn find_window_mut_by_id(
         &mut self,
@@ -743,28 +776,7 @@ impl WMState {
         self.windows.get_mut(&id).map(|window| (id, window))
     }
 
-    /// Find a window by its River window proxy.
-    pub(super) fn find_window_mut_by_proxy(
-        &mut self,
-        proxy: &RiverWindowV1,
-    ) -> Option<(WindowId, &mut Window)> {
-        let id = *self.windows_by_proxy.get(proxy)?;
-        self.windows.get_mut(&id).map(|window| (id, window))
-    }
-
-    /// Apply a metadata update to a window and re-evaluate rules.
-    pub(super) fn apply_window_metadata(
-        &mut self,
-        proxy: &RiverWindowV1,
-        f: impl FnOnce(&mut Window),
-    ) {
-        if let Some((_, window)) = self.find_window_mut_by_proxy(proxy) {
-            f(window);
-            self.evaluate_window_rules(proxy);
-        }
-    }
-
-    /// Remove a window by its River window proxy.
+    /// Remove a window by its ID.
     ///
     /// Also clears `focused_window` if the removed window was focused.
     /// Reconcile the layout tree and global focus pointers after a window is
@@ -845,61 +857,7 @@ impl WMState {
         }
     }
 
-    /// Remove an output by its River output proxy.
-    ///
-    /// If the removed output was focused, `focused_output` is re-pointed to
-    /// `fallback_output` (the output windows were reassigned to, if any),
-    /// falling back to the first remaining output (or `None` if none remain).
-    /// This is the single owner of the focused-output fallback policy.
-    pub(super) fn remove_output_by_proxy(
-        &mut self,
-        proxy: &RiverOutputV1,
-        fallback_output: Option<OutputId>,
-    ) -> Option<OutputId> {
-        let output_id = *self.outputs_by_proxy.get(proxy)?;
-
-        let removed_was_focused = self.focused_output == Some(output_id);
-        self.outputs.remove(&output_id);
-        self.outputs_by_proxy.remove(proxy);
-
-        if removed_was_focused {
-            self.focused_output = fallback_output.or_else(|| self.outputs.keys().next().copied());
-        }
-
-        Some(output_id)
-    }
-
-    /// Find a seat by its River seat proxy.
-    pub(super) fn find_seat_mut_by_proxy(
-        &mut self,
-        proxy: &RiverSeatV1,
-    ) -> Option<(SeatId, &mut Seat)> {
-        let id = *self.seats_by_proxy.get(proxy)?;
-        self.seats.get_mut(&id).map(|seat| (id, seat))
-    }
-
-    /// Remove a seat by its River seat proxy.
-    pub(super) fn remove_seat_by_proxy(&mut self, proxy: &RiverSeatV1) -> Option<SeatId> {
-        let seat_id = *self.seats_by_proxy.get(proxy)?;
-
-        let removed_was_current = self.current_seat == Some(seat_id);
-        self.seats.remove(&seat_id);
-        self.seats_by_proxy.remove(proxy);
-
-        // Recompute current_seat only if the removed seat was current,
-        // or if the current seat is no longer present.
-        if removed_was_current
-            || self
-                .current_seat
-                .is_some_and(|current| !self.seats.contains_key(&current))
-        {
-            self.current_seat = self.seats.first_key_value().map(|(id, _)| *id);
-        }
-
-        Some(seat_id)
-    }
-
-    /// Push a window to the front of the focus stack and mark it focused.
+    /// Remove an output by internal ID.
     pub(super) fn push_focus(&mut self, window_id: WindowId) {
         self.focus_stack.retain(|id| *id != window_id);
         self.focus_stack.insert(0, window_id);
@@ -945,6 +903,155 @@ impl WMState {
 
         if self.pending_focus == Some(window_id) {
             self.pending_focus = self.focused_window;
+        }
+    }
+
+    /// Process a domain event, mutating state.
+    pub(super) fn handle_event(&mut self, event: Event) {
+        match event {
+            Event::WindowCreated {
+                window_id,
+                target_output,
+            } => {
+                let window = Window::new(window_id, target_output);
+                self.windows.insert(window_id, window);
+                self.index_window_in_output(window_id, target_output);
+                self.ensure_tree_for_output(target_output)
+                    .insert_window(window_id.0);
+                self.push_focus(window_id);
+                self.pending_focus = Some(window_id);
+                self.request_manage_dirty();
+            }
+            Event::OutputCreated { output_id } => {
+                let output = Output::new(output_id);
+                self.outputs.insert(output_id, output);
+
+                let orphaned: Vec<OutputId> = self
+                    .output_trees
+                    .keys()
+                    .filter(|id| !self.outputs.contains_key(id))
+                    .copied()
+                    .collect();
+                for orphaned_id in orphaned {
+                    if self.focused_output == Some(orphaned_id) {
+                        self.focused_output = Some(output_id);
+                    }
+                    self.reassign_output(orphaned_id, output_id);
+                }
+
+                if self.focused_output.is_none() {
+                    self.focused_output = Some(output_id);
+                }
+            }
+            Event::SeatCreated { seat_id } => {
+                let seat = Seat::new(seat_id);
+                self.seats.insert(seat_id, seat);
+                if self.current_seat.is_none() {
+                    self.current_seat = Some(seat_id);
+                }
+                self.reconcile_keybindings();
+                self.request_manage_dirty();
+            }
+            Event::WindowClosed { window_id } => {
+                self.close_window_focus_reconcile(window_id);
+            }
+            Event::WindowInteraction { window_id } => {
+                if self.focused_window != Some(window_id) {
+                    self.focus_window_id(window_id);
+                }
+            }
+            Event::DimensionsHint {
+                window_id,
+                min_w,
+                min_h,
+                max_w,
+                max_h,
+            } => {
+                if let Some((_, window)) = self.find_window_mut_by_id(window_id) {
+                    window.set_dimensions_hint(min_w, min_h, max_w, max_h);
+                }
+            }
+            Event::AppIdUpdated { window_id, app_id } => {
+                if let Some((_, window)) = self.find_window_mut_by_id(window_id) {
+                    window.app_id = app_id;
+                }
+                self.evaluate_window_rules(window_id);
+            }
+            Event::TitleUpdated { window_id, title } => {
+                if let Some((_, window)) = self.find_window_mut_by_id(window_id) {
+                    window.title = title;
+                }
+                self.evaluate_window_rules(window_id);
+            }
+            Event::DecorationHintUpdated { window_id, hint } => {
+                if let Some((_, window)) = self.find_window_mut_by_id(window_id) {
+                    window.decoration_hint = Some(hint);
+                }
+            }
+            Event::PidUpdated { window_id, pid } => {
+                if let Some((_, window)) = self.find_window_mut_by_id(window_id) {
+                    window.pid = pid as i32;
+                }
+            }
+            Event::FullscreenRequested { window_id } => {
+                if let Some((_, tree)) = self.tree_for_window_id(window_id)
+                    && tree.toggle_fullscreen(window_id.0)
+                {
+                    self.request_manage_dirty();
+                }
+            }
+            Event::ExitFullscreenRequested { window_id } => {
+                if let Some((_, tree)) = self.tree_for_window_id(window_id)
+                    && tree.toggle_fullscreen(window_id.0)
+                {
+                    self.request_manage_dirty();
+                }
+            }
+            Event::OutputRemoved { output_id } => {
+                let reassign_target = self.outputs.keys().find(|k| **k != output_id).copied();
+                if let Some(to_id) = reassign_target {
+                    self.reassign_output(output_id, to_id);
+                }
+                self.windows_by_output.remove(&output_id);
+                let _ = self.remove_output_by_id(output_id, reassign_target);
+                self.request_manage_dirty();
+            }
+            Event::OutputPositionUpdated { output_id, x, y } => {
+                if let Some((_, output)) = self.find_output_mut_by_proxy_id(output_id) {
+                    output.set_position(x, y);
+                    self.request_manage_dirty();
+                }
+            }
+            Event::OutputDimensionsUpdated { output_id, w, h } => {
+                if let Some((_, output)) = self.find_output_mut_by_proxy_id(output_id) {
+                    output.set_dimensions(w, h);
+                    self.request_manage_dirty();
+                }
+                let window_ids: Vec<WindowId> = self
+                    .windows_for_output(output_id)
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .collect();
+                for window_id in window_ids {
+                    self.evaluate_window_rules(window_id);
+                }
+            }
+            Event::SeatRemoved { seat_id } => {
+                let _ = self.remove_seat_by_id(seat_id);
+                self.reconcile_keybindings();
+                self.request_manage_dirty();
+            }
+            Event::SeatNameUpdated { seat_id, name } => {
+                if let Some((_, seat)) = self.find_seat_mut_by_id(seat_id) {
+                    seat.wl_seat_name = name;
+                }
+            }
+            Event::SeatPointerPositionUpdated { seat_id, x, y } => {
+                if let Some((_, seat)) = self.find_seat_mut_by_id(seat_id) {
+                    seat.pointer_position = Some((x, y));
+                }
+            }
         }
     }
 }

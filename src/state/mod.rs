@@ -5,8 +5,11 @@
 //! focus state, configuration application, and Wayland dispatch handlers.
 #![allow(dead_code)]
 
+mod adapter;
 mod commands;
 mod config;
+mod effects;
+mod events;
 mod handlers;
 mod keybindings;
 mod output;
