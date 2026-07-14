@@ -52,21 +52,44 @@ impl WMState {
     }
 
     /// Remove an output: dispatch core event and clean the proxy index.
+    ///
+    /// Destroys the `river_layer_shell_output_v1` child proxy before dispatching
+    /// the core removal, as required by the river_layer_shell_v1 protocol: the
+    /// child is made inert by the `river_output_v1.removed` event and must be
+    /// destroyed to complete destruction of the output (and before the owner
+    /// `river_output` proxy itself is dropped by the caller). The child proxy is
+    /// `take`n out of the entry first because the core event removes the entry
+    /// from `self.outputs`.
     pub(super) fn remove_output(
         &mut self,
         output_id: OutputId,
         proxy: &crate::protocol::river::river_window_management_v1::client::river_output_v1::RiverOutputV1,
     ) {
+        if let Some(output) = self.outputs.get_mut(&output_id)
+            && let Some(layer_output) = output.river_layer_shell_output.take()
+        {
+            layer_output.destroy();
+        }
         self.handle_event(super::events::Event::OutputRemoved { output_id });
         self.outputs_by_proxy.remove(proxy);
     }
 
     /// Remove a seat: dispatch core event and clean the proxy index.
+    ///
+    /// Mirrors [`remove_output`]: destroys the `river_layer_shell_seat_v1` child
+    /// proxy before dispatching the core removal, since the child is made inert
+    /// by the `river_seat_v1.removed` event and must be destroyed before the
+    /// owner `river_seat` proxy is dropped by the caller.
     pub(super) fn remove_seat(
         &mut self,
         seat_id: SeatId,
         proxy: &crate::protocol::river::river_window_management_v1::client::river_seat_v1::RiverSeatV1,
     ) {
+        if let Some(seat) = self.seats.get_mut(&seat_id)
+            && let Some(layer_seat) = seat.river_layer_shell_seat.take()
+        {
+            layer_seat.destroy();
+        }
         self.handle_event(super::events::Event::SeatRemoved { seat_id });
         self.seats_by_proxy.remove(proxy);
     }
@@ -165,6 +188,14 @@ impl WMState {
                 }
             }
             Effect::FocusWindow { window_id } => {
+                // While a layer surface holds exclusive focus, River ignores WMState
+                // focus changes, so don't emit them.
+                if let Some(seat_id) = self.current_seat
+                    && let Some(seat) = self.seats.get(&seat_id)
+                    && seat.layer_shell_focus == super::seat::LayerShellFocus::Exclusive
+                {
+                    return;
+                }
                 if let Some(seat_id) = self.current_seat
                     && let Some(seat) = self.seats.get(&seat_id)
                     && let Some(window) = self.windows.get(&window_id)
@@ -179,6 +210,75 @@ impl WMState {
                     }
                 }
             }
+            Effect::SetLayerShellDefault { output_id } => {
+                // Must be called during a manage sequence; `apply_manage`
+                // produces this effect and the runtime applies it within
+                // `ManageStart`. No-op if the output's layer-shell proxy is
+                // not yet created (the effect is re-emitted on the next change).
+                if let Some(output) = self.outputs.get(&output_id)
+                    && let Some(layer_output) = output.river_layer_shell_output.as_ref()
+                {
+                    layer_output.set_default();
+                }
+            }
         }
+    }
+
+    /// Ensure a `river_layer_shell_output_v1` child proxy exists for the given
+    /// output, creating it on demand.
+    ///
+    /// This is the adapter-side bookkeeping that issues the River protocol call:
+    /// it binds the layer-shell output proxy via `RiverLayerShellV1::get_output`
+    /// against the output's underlying `river_output` proxy. It is a no-op when
+    /// the layer-shell global is not yet bound, when the output has no underlying
+    /// `river_output`, or when a layer-shell output proxy was already created, so
+    /// it is safe to call repeatedly (e.g. once per output on global arrival and
+    /// once per newly created output).
+    pub(super) fn ensure_layer_shell_output(
+        &mut self,
+        output_id: OutputId,
+        qh: &QueueHandle<Self>,
+    ) {
+        let (Some(shell), Some(output)) =
+            (self.layer_shell.as_ref(), self.outputs.get_mut(&output_id))
+        else {
+            return;
+        };
+        if output.river_layer_shell_output.is_some() {
+            return;
+        }
+        // Guard against double get_output
+        let Some(river_output) = output.river_output.as_ref() else {
+            return;
+        };
+        // Carry OutputId as dispatch user-data so `non_exclusive_area` events
+        // can be routed back to the owning output.
+        output.river_layer_shell_output = Some(shell.get_output(river_output, qh, output_id));
+    }
+
+    /// Ensure a `river_layer_shell_seat_v1` child proxy exists for the given
+    /// seat, creating it on demand.
+    ///
+    /// Mirrors [`ensure_layer_shell_output`]: issues the River protocol call
+    /// `RiverLayerShellV1::get_seat` against the seat's underlying `river_seat`
+    /// proxy. It is a no-op when the layer-shell global is not yet bound, when
+    /// the seat has no underlying `river_seat`, or when a layer-shell seat proxy
+    /// was already created, so it is safe to call repeatedly (e.g. once per seat
+    /// on global arrival and once per newly created seat).
+    pub(super) fn ensure_layer_shell_seat(&mut self, seat_id: SeatId, qh: &QueueHandle<Self>) {
+        let (Some(shell), Some(seat)) = (self.layer_shell.as_ref(), self.seats.get_mut(&seat_id))
+        else {
+            return;
+        };
+        if seat.river_layer_shell_seat.is_some() {
+            return;
+        }
+        // Guard against double get_seat.
+        let Some(river_seat) = seat.river_seat.as_ref() else {
+            return;
+        };
+        // Carry SeatId as dispatch user-data so `focus_exclusive` events
+        // can be routed back to the owning seat.
+        seat.river_layer_shell_seat = Some(shell.get_seat(river_seat, qh, seat_id));
     }
 }

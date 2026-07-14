@@ -32,3 +32,18 @@ pub mod river_xkb_bindings_v1 {
         wayland_scanner::generate_client_code!("protocol/river-xkb-bindings-v1.xml");
     }
 }
+
+pub mod river_layer_shell_v1 {
+    use super::river_window_management_v1::*;
+    use wayland_client;
+
+    wayland_scanner::generate_interfaces!("protocol/river-layer-shell-v1.xml");
+
+    pub mod client {
+        use super::*;
+        use crate::protocol::river::river_window_management_v1::client::*;
+        use wayland_client;
+
+        wayland_scanner::generate_client_code!("protocol/river-layer-shell-v1.xml");
+    }
+}

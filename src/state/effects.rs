@@ -60,4 +60,12 @@ pub(crate) enum Effect {
     FocusWindow {
         window_id: WindowId,
     },
+    /// Mark an output as the layer-shell default for new layer surfaces that do
+    /// not request a specific output (e.g. launchers). Overrides any previous
+    /// `set_default` on any `river_layer_shell_output_v1` object, so it is
+    /// emitted only when the chosen default output changes. Must be issued
+    /// during a manage sequence, so it is produced by `apply_manage`.
+    SetLayerShellDefault {
+        output_id: OutputId,
+    },
 }

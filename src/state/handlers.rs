@@ -6,7 +6,10 @@
 //!
 //! Layout policy is intentionally not handled here.
 //! The BSP tree layout engine should consume state changes and window metadata from this module.
-use super::{keybindings::XkbBindingId, wm::WMState};
+use super::{keybindings::XkbBindingId, output::OutputId, seat::SeatId, wm::WMState};
+use crate::protocol::river::river_layer_shell_v1::client::river_layer_shell_output_v1::RiverLayerShellOutputV1;
+use crate::protocol::river::river_layer_shell_v1::client::river_layer_shell_seat_v1::RiverLayerShellSeatV1;
+use crate::protocol::river::river_layer_shell_v1::client::river_layer_shell_v1::RiverLayerShellV1;
 use crate::protocol::river::river_window_management_v1::client::river_node_v1::RiverNodeV1;
 use crate::protocol::river::river_window_management_v1::client::river_output_v1::RiverOutputV1;
 use crate::protocol::river::river_window_management_v1::client::river_seat_v1::RiverSeatV1;
@@ -52,6 +55,20 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WMState {
                     // so request a River manage sequence when it appears.
                     if state.xkb_bindings_dirty {
                         state.request_manage_dirty();
+                    }
+                }
+                "river_layer_shell_v1" => {
+                    debug!(target: "fenestre::state::handlers", "Found river_layer_shell_v1");
+                    let layer_shell: RiverLayerShellV1 = registry.bind(name, version, qh, ());
+                    state.layer_shell = Some(layer_shell);
+                    // Cover the case where outputs/seats arrived before LayerShell global.
+                    let output_ids: Vec<OutputId> = state.outputs.keys().copied().collect();
+                    for o in output_ids {
+                        state.ensure_layer_shell_output(o, qh);
+                    }
+                    let seat_ids: Vec<SeatId> = state.seats.keys().copied().collect();
+                    for s in seat_ids {
+                        state.ensure_layer_shell_seat(s, qh);
                     }
                 }
                 _ => {}
@@ -145,6 +162,7 @@ impl Dispatch<RiverWindowManagerV1, ()> for WMState {
                 state.outputs_by_proxy.insert(id.clone(), output_id);
                 state.handle_event(event);
                 state.set_output_proxy(output_id, id.clone());
+                state.ensure_layer_shell_output(output_id, qh);
             }
             Event::Seat { id } => {
                 let seat_id = state.next_seat_id();
@@ -156,6 +174,7 @@ impl Dispatch<RiverWindowManagerV1, ()> for WMState {
                 state.seats_by_proxy.insert(id.clone(), seat_id);
                 state.handle_event(event);
                 state.set_seat_proxy(seat_id, id.clone());
+                state.ensure_layer_shell_seat(seat_id, qh);
             }
         }
     }
@@ -569,5 +588,67 @@ impl Dispatch<RiverXkbBindingV1, XkbBindingId> for WMState {
             XkbBindingEvent::Released => {}
             XkbBindingEvent::StopRepeat => {}
         }
+    }
+}
+
+impl Dispatch<RiverLayerShellV1, ()> for WMState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &RiverLayerShellV1,
+        _event: <RiverLayerShellV1 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<RiverLayerShellOutputV1, OutputId> for WMState {
+    fn event(
+        state: &mut Self,
+        _proxy: &RiverLayerShellOutputV1,
+        event: <RiverLayerShellOutputV1 as wayland_client::Proxy>::Event,
+        data: &OutputId,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        use crate::protocol::river::river_layer_shell_v1::client::river_layer_shell_output_v1::Event;
+        match event {
+            Event::NonExclusiveArea {
+                x,
+                y,
+                width,
+                height,
+            } => {
+                if let Some(output) = state.outputs.get_mut(data) {
+                    output.set_non_exclusive_area(x, y, width, height);
+                }
+                // River guarantees a manage_start follows this event, so
+                // `apply_manage` will re-run `set_output_rect` with the new
+                // tiling area; no explicit manage request is needed here.
+            }
+        }
+    }
+}
+
+impl Dispatch<RiverLayerShellSeatV1, SeatId> for WMState {
+    fn event(
+        state: &mut Self,
+        _proxy: &RiverLayerShellSeatV1,
+        event: <RiverLayerShellSeatV1 as wayland_client::Proxy>::Event,
+        data: &SeatId,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        use crate::protocol::river::river_layer_shell_v1::client::river_layer_shell_seat_v1::Event;
+        let mode = match event {
+            Event::FocusExclusive => super::seat::LayerShellFocus::Exclusive,
+            Event::FocusNonExclusive => super::seat::LayerShellFocus::NonExclusive,
+            Event::FocusNone => super::seat::LayerShellFocus::None,
+        };
+        state.handle_event(super::events::Event::SeatLayerShellFocus {
+            seat_id: *data,
+            mode,
+        });
     }
 }
