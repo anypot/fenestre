@@ -46,10 +46,7 @@ pub(crate) enum Command {
     SetTiled,
 
     /// Spawn a external program with optional arguments.
-    Spawn {
-        program: String,
-        args: Vec<String>,
-    },
+    Spawn { program: String, args: Vec<String> },
 
     /// Exit the River Wayland session.
     ExitRiver,
@@ -61,23 +58,23 @@ pub(crate) enum Command {
     CloseFocused,
 
     /// Move focus to a specific output.
-    FocusOutput {
-        output_id: OutputId,
-    },
+    FocusOutput { output_id: OutputId },
 
+    /// Move the focused window left.
     MoveLeft,
 
+    /// Move the focused window right.
     MoveRight,
 
+    /// Move the focused window up.
     MoveUp,
 
+    /// Move the focused window down.
     MoveDown,
 
-    ResizeExpand {
-        direction: FocusDirection,
-    },
+    /// Expand the focused window's size in the given direction.
+    ResizeExpand { direction: FocusDirection },
 
-    ResizeShrink {
-        direction: FocusDirection,
-    },
+    /// Shrink the focused window's size in the given direction.
+    ResizeShrink { direction: FocusDirection },
 }

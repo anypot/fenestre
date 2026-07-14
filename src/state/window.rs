@@ -2,7 +2,6 @@
 #![allow(dead_code)]
 
 use crate::layout::Rect;
-use crate::layout::WindowState;
 use crate::protocol::river::river_window_management_v1::client::river_node_v1::RiverNodeV1;
 use crate::protocol::river::river_window_management_v1::client::river_window_v1::RiverWindowV1;
 
@@ -79,15 +78,6 @@ pub(super) struct Window {
     /// Desired layout rectangle.
     pub(super) layout_rect: Option<Rect>,
 
-    /// Last resolved layout state for this window.
-    ///
-    /// This is a cache mirroring the authoritative per-node [`WindowState`] owned
-    /// by the layout tree, kept for protocol transition detection (entering /
-    /// leaving fullscreen) and render z-ordering, where the owning tree is not
-    /// conveniently in scope. The tree remains the source of truth; float
-    /// geometry lives in the node's `floating_rect`, not here.
-    pub(super) mode: WindowState,
-
     /// Current position.
     pub(super) position: Position,
 
@@ -100,10 +90,6 @@ pub(super) struct Window {
     /// `1` = client-side decorations
     /// `2` or `None` = no preference, fall back to global `decorations` config
     pub(super) decoration_hint: Option<u32>,
-
-    /// Last-sent border state for this window, used to skip redundant
-    /// `set_borders` calls when nothing has changed.
-    pub(super) last_border: Option<(i32, u32)>,
 }
 
 /// Minimum size (logical pixels) for a floating/pseudo-tiled window when the
@@ -126,11 +112,9 @@ impl Window {
             title: None,
             rules_applied: false,
             pid: 0,
-            mode: WindowState::Tiled,
             position: Position::default(),
             dimensions_hint: DimensionsHint::default(),
             decoration_hint: None,
-            last_border: None,
         }
     }
 

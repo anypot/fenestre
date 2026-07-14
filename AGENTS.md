@@ -66,12 +66,15 @@ fenestre/
       river.rs             - wayland-scanner generated River protocol bindings
     state/
       mod.rs               - Module declaration, re-exports (WMState, OutputId)
-      wm.rs                - WMState definition, focus/output/window/seat lookup helpers
-      handlers.rs          - Wayland Dispatch impls for all River + wl protocols
+      wm.rs                - Pure core: WMState, handle_event(Event), desired_scene, scene reconciler (apply_manage/apply_render), focus/output/window/seat lookup helpers
+      events.rs            - Event domain enum: pure events consumed by handle_event (translated from River by handlers.rs)
+      effects.rs           - Effect domain enum + ALL_EDGES: deferred window-level River protocol calls
+      adapter.rs           - Protocol adapter: only state/ module that issues River calls; applies deferred Effect's, proxy bookkeeping for windows/outputs/seats
+      handlers.rs          - Thin Wayland Dispatch translator: River events -> Event, Effect -> adapter. No state mutation.
       commands.rs          - Command execution (focus, spawn, close, fullscreen, resize, etc.)
       config.rs            - Config loading into WMState, keybinding reconciliation
       keybindings.rs       - Runtime River xkb binding CRUD
-      window.rs            - Window proxy + metadata tracking
+      window.rs            - Window proxy + metadata tracking (no state cache; WindowState lives in the tree)
       output.rs            - Output proxy + metadata tracking
       seat.rs              - Seat proxy + metadata tracking
       rule.rs              - Window rule matching/evaluation (exact/prefix/regex matchers, later-wins apply)
@@ -94,21 +97,79 @@ fenestre/
 - Most fields are `pub(super)` to keep the `state` module boundary strict.
 - Maintains three `HashMap` proxy indexes (`windows_by_proxy`, `outputs_by_proxy`, `seats_by_proxy`) for O(1) lookup of Wayland objects, plus a per-output window grouping index `windows_by_output` (`HashMap<OutputId, HashSet<WindowId>>`) for O(1) lookup of which windows belong to an output.
 
+### Architecture (hexagonal)
+
+The `state` module is split into three layers so the core logic is testable
+without a live compositor. See `docs/refactor-plan.md` for the full design
+rationale and sequencing:
+
+- **Core (pure):** `WMState` and the layout engine. Knows nothing about River/Wayland.
+  The single entry point is `WMState::handle_event(Event)`, a pure reducer over
+  the domain `Event` enum (`src/state/events.rs`). It performs no protocol I/O.
+- **Adapter (IO):** `src/state/adapter.rs` is the **only** `state/` module that
+  imports `protocol::` and issues River calls. It applies deferred `Effect`s and
+  owns proxy bookkeeping for windows/outputs/seats.
+- **Runtime:** `main.rs` owns the `calloop` loop and wires adapter ↔ core.
+
+The domain boundary types are:
+
+- `Event` (`src/state/events.rs`) — pure inputs translated from River protocol
+  events by `handlers.rs` (e.g. `AppIdUpdated`, `TitleUpdated`, `OutputDimensionsUpdated`).
+- `Effect` (`src/state/effects.rs`) — deferred window-level River protocol calls
+  (`ProposeDimensions`, `Fullscreen`, `ExitFullscreen`, `UseSsd`, `EnsureNode`,
+  `SetBorders`, `SetPosition`, `PlaceTop`, `Close`, `FocusWindow`). `ALL_EDGES`
+  is the bitmask requesting all four border edges.
+
+`handlers.rs` is a thin translator only: River event → `Event` (fed to
+`handle_event`), and `Effect` → adapter. **No state mutation happens in
+`handlers.rs`.**
+
+#### Declarative scene reconciler
+
+`apply_manage` / `apply_render` no longer imperatively detect transitions from a
+cached mode. Instead:
+
+- `desired_scene(&self) -> SceneSnapshot` is a **pure, read-only** function of
+  current state. It snapshots every window's intended `rect`, `state`, `z`
+  priority, and `border` appearance as a `SceneEntry` (`src/state/wm.rs`).
+- Each protocol phase keeps its **own** snapshot and diffs the fresh
+  `desired_scene()` against it, emitting only the `Effect`s that changed:
+  - `last_manage_scene` — diffed/updated by `apply_manage` (dimensions,
+    fullscreen enter/leave, server-side decorations).
+  - `last_render_scene` — diffed/updated by `apply_render` (position, z-order, borders).
+- Both phases return `Vec<Effect>`; the caller (runtime) hands that vector to the
+  adapter, which applies the River protocol calls.
+
+**Do not collapse `last_manage_scene` and `last_render_scene` into one snapshot.**
+River splits window management into `ManageStart` (dimensions/fullscreen/SSD) and
+`RenderStart` (position/z-order/borders); a single shared snapshot would let
+`apply_manage` overwrite the baseline before `apply_render` runs, silently
+dropping render-phase effects for newly mapped windows. Each phase must
+re-snapshot z-priority and border for **every** window so focus-only changes
+between renders are still caught.
+
 ### River Protocol Flow
 
 1. `main.rs` connects to Wayland and gets the registry.
-2. `handlers.rs` binds `river_window_manager_v1` and `river_xkb_bindings_v1` globals.
+2. `handlers.rs` binds `river_window_manager_v1` and `river_xkb_bindings_v1` globals,
+   translating each River event into a domain `Event` and calling `state.handle_event(event)`.
 3. River emits `ManageStart` / `RenderStart` sequences.
 4. During `ManageStart`:
-   - `apply_manage` reconciles dirty state (BSP layout, focus, close).
+   - `handle_event` has already reconciled dirty state (BSP layout, focus, close)
+     from the inbound `Event`s.
+   - `apply_manage` computes `desired_scene()`, diffs it against `last_manage_scene`,
+     and returns `Vec<Effect>` (dimensions/fullscreen/SSD). The runtime forwards
+     these to the adapter, which issues the River calls.
    - Clears `render_order_cache` for stacking order rebuild on next render.
    - If `xkb_bindings_dirty`: destroys stale bindings via `destroy_pending_keybindings`, then
      creates/enables desired bindings via `configure_keybindings`.
    - Window rules are **not** re-applied here. They are evaluated event-driven on
-     each window `AppId`/`Title` arrival (`WMState::evaluate_window_rules`) and
+     each window `AppId`/`Title` arrival (`WMState::evaluate_window_rules`, triggered
+     by `Event::AppIdUpdated` / `Event::TitleUpdated`) and
      re-run for an output's windows when that output's geometry becomes known.
 5. During `RenderStart`:
-   - `apply_render` positions `RiverNodeV1` objects and updates stacking order.
+   - `apply_render` computes `desired_scene()`, diffs it against `last_render_scene`,
+     and returns `Vec<Effect>` (position/z-order/borders); the adapter applies them.
    - `reconcile_keybindings` is called when seats appear/disappear to update the binding set.
 
 ### BSP Layout Engine (`layout/tree.rs`)
@@ -121,9 +182,21 @@ fenestre/
   focus/move/resize commands target.
 - `insert_window` splits the currently focused window along its longest side.
 - `remove_window` collapses empty splits; distinguishes `LeafRemoved`, `Replaced`, `Modified`, `NotFound`.
-- Window states: `Tiled`, `Floating`, `PseudoTiled`, `Fullscreen`.
+- Window states are an **enum-with-data** living on the tree node (`src/layout/tree.rs`)
+  so illegal states are unrepresentable:
+  - `Tiled`
+  - `Floating { rect: Rect }`
+  - `PseudoTiled { rect: Rect }`
+  - `Fullscreen { restore: Box<WindowState> }`
+  The tree node owns this **single** typed state; `Window` no longer caches state
+  (that role moved to the reconciler's scene snapshots). `Floating`/`PseudoTiled`
+  carry their own rect, so a tiled window *cannot* hold a floating rect, and
+  `Fullscreen` carries the pre-fullscreen state in `restore` (replacing the old
+  `base_state` field). Toggle transitions (`toggle_fullscreen` / `toggle_floating`
+  / `toggle_pseudo_tiled`) are total, derived from the variant via `mem::replace`.
 - Non-tiling windows (floating/fullscreen) receive zero-area rects so they do not consume split space.
-- `arranged_windows` returns `(window_id, rect, WindowState)` for both `apply_manage` and `apply_render`.
+- `arranged_windows` / `arranged_windows_readonly` return `(window_id, rect, WindowState)`
+  for the reconciler (`apply_manage` / `apply_render` read from the latter).
 - Resize navigation: `focus_to_resize_target` finds ancestor splits supporting the requested resize direction when the immediate split doesn't support it.
 
 ### Focus Model
@@ -154,8 +227,8 @@ fenestre/
    split directions from the destination output's real geometry, so windows
    survive output changes without being destroyed.
 - Windows created before any real output exists (or left behind when the last
-  output is removed) live in an orphan tree. `Event::Output` drains orphan trees
-  into the first real output via `reassign_output`, so no window is lost.
+  output is removed) live in an orphan tree. `Event::OutputCreated` drains orphan
+  trees into the first real output via `reassign_output`, so no window is lost.
 
 ### Keybinding Model
 
@@ -189,9 +262,10 @@ fenestre/
 - Rules are applied once per window. Reloading config does **not** re-apply rules
   to already-on-screen windows (by design).
 - Implementation: `state/rule.rs` (`WindowRule`, `RulePattern`, `WindowRules`);
-  evaluation is triggered from `state/handlers.rs` `AppId`/`Title` events via
-  `WMState::evaluate_window_rules`, and re-run for an output's windows when its
-  geometry becomes known (to catch up windows deferred for a missing output rect).
+  evaluation is triggered by `Event::AppIdUpdated` / `Event::TitleUpdated` via
+  `WMState::evaluate_window_rules` (handlers.rs translates the River events into
+  those `Event`s), and re-run for an output's windows when its geometry becomes
+  known (to catch up windows deferred for a missing output rect).
 
 ### Configuration
 
@@ -219,7 +293,11 @@ fenestre/
   - `2` or absent = fall back to global `decorations` config
 - Modifier constants: Shift=1, Super=64 (matches `xkbcommon` modifier bits used by River).
 - Modifier names are matched case-insensitively (`Super` ≡ `super`).
-- **WindowMode vs WindowState**: `WindowMode` is stored on `Window` and represents persistent window state; `WindowState` is used internally by the layout engine for BSP arrangement decisions.
+- **WindowState is the single window-state vocabulary.** The BSP layout engine
+  uses an enum-with-data (`Tiled` / `Floating { rect }` / `PseudoTiled { rect }` /
+  `Fullscreen { restore }`, see `layout/tree.rs`). `Window` no longer caches state
+  — the authoritative state lives on the layout tree node and is mirrored into the
+  reconciler's scene snapshots (`last_manage_scene` / `last_render_scene`).
 
 ## Coding Conventions
 
@@ -242,8 +320,11 @@ fenestre/
 
 ## Important Invariants
 
-1. **State module boundary**: River protocol event handlers live in `state/handlers.rs`.
-   Layout policy lives in `layout/`. Command dispatch lives in `state/commands.rs`.
+1. **Hexagonal boundary**: `state/wm.rs` + `layout/` are the pure core — no
+   `protocol::` imports, no River calls (compiler-enforced). `state/adapter.rs` is
+   the **only** `state/` module that issues River protocol calls; it applies
+   `Effect`s returned by the core. `state/handlers.rs` is a thin translator
+   (River event → `Event`, `Effect` → adapter) and performs **no** state mutation.
 2. **Internal commands only**: `Command` is `pub(crate)` and is not an IPC surface.
 3. **Manage/render sequence discipline**: Window geometry changes must happen inside
    `apply_manage`; node positioning must happen inside `apply_render`.
@@ -251,6 +332,11 @@ fenestre/
    pending queues applied during the appropriate sequence to avoid mid-event mutation.
 5. **Config reconciliation**: When seats/outputs appear late, `reconcile_keybindings`
    is called so bindings are created for the current seat set.
+6. **Scene snapshot discipline**: `apply_manage` and `apply_render` each keep their
+   **own** snapshot (`last_manage_scene` / `last_render_scene`) and diff the fresh
+   `desired_scene()` against it. Never collapse the two snapshots into one, and each
+   phase must re-snapshot z-priority and border for **every** window so focus-only
+   changes between renders are still caught.
 
 ## Work in Progress / Gotchas
 
@@ -262,6 +348,35 @@ fenestre/
 - `render_order_cache` must be cleared on any structural change to windows or focus.
 - `ensure_focused_output` falls back to the first output if none is focused yet.
 
+## Planned work
+
+Two larger improvements are scoped but not yet started. See `docs/refactor-plan.md`
+for the full design, sequencing, and risk notes.
+
+### Layout as a pluggable trait
+
+BSP tiling is hard-wired into `layout/tree.rs`. Adding alternative layouts
+(master-stack, grid, tabbed, monocle) currently means surgery in core.
+
+- Define a `Layout` trait against the minimal `LayoutTree` API core actually
+  needs (arrange windows into rects; insert / remove / focus-navigation hooks).
+- Implement it for the existing BSP tree first (no behaviour change).
+- Route core through the trait (one `Box<dyn Layout>` / enum per output).
+  Floating and fullscreen handling stay outside the tiling layout.
+
+### Unify the config schema
+
+`config/lua.rs` and `config/toml.rs` are parallel loaders feeding a shared
+`parser`. Adding one field (as with `default_float_ratio`) means edits in three
+files, and the two paths can drift.
+
+- Define the config shape once as serde structs with validation.
+- Have TOML deserialize directly into those structs.
+- Bridge the Lua table → serde (e.g. an `mlua` value → `serde` deserializer) so
+  both formats share one validation / build path.
+- Collapse `parser::build_layout` and the per-format duplication; adding a field
+  becomes a one-line struct change.
+
 ## Docker / Environment Notes
 
 No Dockerfile or CI workflow is present. The project targets a Linux desktop environment
@@ -270,4 +385,4 @@ with a River compositor that supports:
 - `river_window_management_v1` (version 5)
 - `river_xkb_bindings_v1` (version 3)
 
-Building requires Rust 1.84+ (edition 2024) and Wayland development libraries.
+Building requires Rust 1.88+ (edition 2024) and Wayland development libraries.

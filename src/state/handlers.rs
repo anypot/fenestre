@@ -6,13 +6,7 @@
 //!
 //! Layout policy is intentionally not handled here.
 //! The BSP tree layout engine should consume state changes and window metadata from this module.
-use super::{
-    keybindings::XkbBindingId,
-    output::{Output, OutputId},
-    seat::Seat,
-    window::Window,
-    wm::WMState,
-};
+use super::{keybindings::XkbBindingId, wm::WMState};
 use crate::protocol::river::river_window_management_v1::client::river_node_v1::RiverNodeV1;
 use crate::protocol::river::river_window_management_v1::client::river_output_v1::RiverOutputV1;
 use crate::protocol::river::river_window_management_v1::client::river_seat_v1::RiverSeatV1;
@@ -90,7 +84,8 @@ impl Dispatch<RiverWindowManagerV1, ()> for WMState {
                 );
             }
             Event::ManageStart => {
-                state.apply_manage(qh);
+                let effects = state.apply_manage(qh);
+                state.apply_effects(qh, effects);
                 if state.xkb_bindings_dirty {
                     // Destroy stale bindings before creating/enabling the desired set.
                     state.destroy_pending_keybindings();
@@ -102,7 +97,8 @@ impl Dispatch<RiverWindowManagerV1, ()> for WMState {
                 proxy.manage_finish();
             }
             Event::RenderStart => {
-                state.apply_render(qh);
+                let effects = state.apply_render();
+                state.apply_effects(qh, effects);
                 proxy.render_finish();
             }
             Event::SessionLocked => {
@@ -123,26 +119,19 @@ impl Dispatch<RiverWindowManagerV1, ()> for WMState {
                     target: "fenestre::state::handlers",
                     "RiverWindowManagerV1 event: Window created, internal WindowId={window_id:?}"
                 );
-                // Resolve a valid focused output before computing the window's
-                // target: if no real output exists yet, place the window in a
-                // temporary orphan tree. `Event::Output` self-heals any orphan
-                // trees by draining them into the first real output.
                 state.ensure_focused_output();
                 let target_output = state.focused_output.unwrap_or_else(|| {
                     let output_id = state.next_output_id();
                     state.focused_output = Some(output_id);
                     output_id
                 });
-                let mut window = Window::new(window_id, target_output);
-                window.river_window = Some(id.clone());
-                state.windows.insert(window_id, window);
-                state.windows_by_proxy.insert(id, window_id);
-                state.index_window_in_output(window_id, target_output);
-                state
-                    .ensure_tree_for_output(target_output)
-                    .insert_window(window_id.0);
-                state.push_focus(window_id);
-                state.pending_focus = Some(window_id);
+                let event = super::events::Event::WindowCreated {
+                    window_id,
+                    target_output,
+                };
+                state.windows_by_proxy.insert(id.clone(), window_id);
+                state.handle_event(event);
+                state.set_window_proxy(window_id, id.clone());
 
                 state.request_manage_dirty();
             }
@@ -152,53 +141,21 @@ impl Dispatch<RiverWindowManagerV1, ()> for WMState {
                     target: "fenestre::state::handlers",
                     "RiverWindowManagerV1 event: Output created, internal OutputId={output_id:?}"
                 );
-                let mut output = Output::new(output_id);
-                output.river_output = Some(id.clone());
-                state.outputs.insert(output_id, output);
-                state.outputs_by_proxy.insert(id, output_id);
-
-                // Self-heal any orphaned output trees. Orphans can appear when
-                // the last output is removed (its tree is intentionally kept so
-                // windows survive), or when a window is created before any real
-                // output exists. Drain those orphans into the new output's tree
-                // now.
-                let orphaned: Vec<OutputId> = state
-                    .output_trees
-                    .keys()
-                    .filter(|id| !state.outputs.contains_key(id))
-                    .copied()
-                    .collect();
-                for orphaned_id in orphaned {
-                    if state.focused_output == Some(orphaned_id) {
-                        state.focused_output = Some(output_id);
-                    }
-                    state.reassign_output(orphaned_id, output_id);
-                }
-
-                if state.focused_output.is_none() {
-                    state.focused_output = Some(output_id);
-                }
+                let event = super::events::Event::OutputCreated { output_id };
+                state.outputs_by_proxy.insert(id.clone(), output_id);
+                state.handle_event(event);
+                state.set_output_proxy(output_id, id.clone());
             }
             Event::Seat { id } => {
-                // Store River's seat proxy before reconciling bindings.
                 let seat_id = state.next_seat_id();
                 debug!(
                     target: "fenestre::state::handlers",
                     "RiverWindowManagerV1 event: Seat created, internal SeatId={seat_id:?}"
                 );
-                let mut seat = Seat::new(seat_id);
-                seat.river_seat = Some(id.clone());
-                state.seats.insert(seat_id, seat);
-                state.seats_by_proxy.insert(id, seat_id);
-
-                // Set as current seat if first.
-                if state.current_seat.is_none() {
-                    state.current_seat = Some(seat_id);
-                }
-
-                // New seats may change which bindings should exist at runtime.
-                state.reconcile_keybindings();
-                state.request_manage_dirty();
+                let event = super::events::Event::SeatCreated { seat_id };
+                state.seats_by_proxy.insert(id.clone(), seat_id);
+                state.handle_event(event);
+                state.set_seat_proxy(seat_id, id.clone());
             }
         }
     }
@@ -227,13 +184,7 @@ impl Dispatch<RiverWindowV1, ()> for WMState {
                     state.request_manage_dirty();
                     return;
                 };
-                // Reconcile the layout tree and global focus pointers for the
-                // closed window: removes it from its tree, the window map, and
-                // the focus stack, then routes focus via the tree's preferred
-                // new focus. See `WMState::close_window_focus_reconcile`.
-                state.close_window_focus_reconcile(window_id);
-                // Drop the now-stale proxy mapping and free the River object.
-                state.windows_by_proxy.remove(proxy);
+                state.remove_window(window_id, proxy);
                 state.request_manage_dirty();
                 proxy.destroy();
             }
@@ -251,9 +202,17 @@ impl Dispatch<RiverWindowV1, ()> for WMState {
                     max_width,
                     max_height
                 );
-                if let Some((_, window)) = state.find_window_mut_by_proxy(proxy) {
-                    window.set_dimensions_hint(min_width, min_height, max_width, max_height);
-                }
+                let Some(window_id) = state.windows_by_proxy.get(proxy).copied() else {
+                    return;
+                };
+                let event = super::events::Event::DimensionsHint {
+                    window_id,
+                    min_w: min_width,
+                    min_h: min_height,
+                    max_w: max_width,
+                    max_h: max_height,
+                };
+                state.handle_event(event);
             }
             Event::Dimensions { width, height } => {
                 debug!(
@@ -266,18 +225,22 @@ impl Dispatch<RiverWindowV1, ()> for WMState {
                     target: "fenestre::state::handlers",
                     "RiverWindowV1 event: App ID updated to {app_id:?}"
                 );
-                state.apply_window_metadata(proxy, |window| {
-                    window.app_id = app_id;
-                });
+                let Some(window_id) = state.windows_by_proxy.get(proxy).copied() else {
+                    return;
+                };
+                let event = super::events::Event::AppIdUpdated { window_id, app_id };
+                state.handle_event(event);
             }
             Event::Title { title } => {
                 debug!(
                     target: "fenestre::state::handlers",
                     "RiverWindowV1 event: Title updated to {title:?}"
                 );
-                state.apply_window_metadata(proxy, |window| {
-                    window.title = title;
-                });
+                let Some(window_id) = state.windows_by_proxy.get(proxy).copied() else {
+                    return;
+                };
+                let event = super::events::Event::TitleUpdated { window_id, title };
+                state.handle_event(event);
             }
             Event::Parent { parent } => {
                 debug!(
@@ -290,9 +253,14 @@ impl Dispatch<RiverWindowV1, ()> for WMState {
                     target: "fenestre::state::handlers",
                     "RiverWindowV1 event: Decoration hint updated to {hint:?}"
                 );
-                if let Some((_, window)) = state.find_window_mut_by_proxy(proxy) {
-                    window.decoration_hint = Some(hint.into());
-                }
+                let Some(window_id) = state.windows_by_proxy.get(proxy).copied() else {
+                    return;
+                };
+                let event = super::events::Event::DecorationHintUpdated {
+                    window_id,
+                    hint: hint.into(),
+                };
+                state.handle_event(event);
             }
             Event::PointerMoveRequested { seat } => {
                 debug!(
@@ -329,24 +297,22 @@ impl Dispatch<RiverWindowV1, ()> for WMState {
                     target: "fenestre::state::handlers",
                     "RiverWindowV1 event: Fullscreen requested"
                 );
-                let Some((window_id, tree)) = state.tree_for_window_proxy(proxy) else {
+                let Some(window_id) = state.windows_by_proxy.get(proxy).copied() else {
                     return;
                 };
-                if tree.toggle_fullscreen(window_id.0) {
-                    state.request_manage_dirty();
-                }
+                let event = super::events::Event::FullscreenRequested { window_id };
+                state.handle_event(event);
             }
             Event::ExitFullscreenRequested => {
                 debug!(
                     target: "fenestre::state::handlers",
                     "RiverWindowV1 event: Exit fullscreen requested"
                 );
-                let Some((window_id, tree)) = state.tree_for_window_proxy(proxy) else {
+                let Some(window_id) = state.windows_by_proxy.get(proxy).copied() else {
                     return;
                 };
-                if tree.toggle_fullscreen(window_id.0) {
-                    state.request_manage_dirty();
-                }
+                let event = super::events::Event::ExitFullscreenRequested { window_id };
+                state.handle_event(event);
             }
             Event::MinimizeRequested => {
                 debug!(
@@ -359,9 +325,14 @@ impl Dispatch<RiverWindowV1, ()> for WMState {
                     target: "fenestre::state::handlers",
                     "RiverWindowV1 event: Unreliable PID updated to {unreliable_pid}"
                 );
-                if let Some((_, window)) = state.find_window_mut_by_proxy(proxy) {
-                    window.pid = unreliable_pid;
-                }
+                let Some(window_id) = state.windows_by_proxy.get(proxy).copied() else {
+                    return;
+                };
+                let event = super::events::Event::PidUpdated {
+                    window_id,
+                    pid: unreliable_pid as u32,
+                };
+                state.handle_event(event);
             }
             Event::PresentationHint { hint } => {
                 debug!(
@@ -414,15 +385,7 @@ impl Dispatch<RiverOutputV1, ()> for WMState {
                     state.request_manage_dirty();
                     return;
                 };
-                // Reassign the removed output's windows onto a surviving output
-                // (if any), then let `remove_output_by_proxy` own the
-                // `focused_output` fallback so the policy lives in one place.
-                let reassign_target = state.outputs.keys().find(|k| **k != output_id).copied();
-                if let Some(to_id) = reassign_target {
-                    state.reassign_output(output_id, to_id);
-                }
-                state.windows_by_output.remove(&output_id);
-                let output_id = state.remove_output_by_proxy(proxy, reassign_target);
+                state.remove_output(output_id, proxy);
                 debug!(
                     target: "fenestre::state::handlers",
                     "RiverOutputV1 event: Output removed, internal OutputId={output_id:?}"
@@ -440,38 +403,26 @@ impl Dispatch<RiverOutputV1, ()> for WMState {
                     target: "fenestre::state::handlers",
                     "RiverOutputV1 event: Position updated to ({x}, {y})"
                 );
-                if let Some((_, output)) = state.find_output_mut_by_proxy(proxy) {
-                    output.set_position(x, y);
-                    state.request_manage_dirty();
-                }
+                let Some(output_id) = state.outputs_by_proxy.get(proxy).copied() else {
+                    return;
+                };
+                let event = super::events::Event::OutputPositionUpdated { output_id, x, y };
+                state.handle_event(event);
             }
             Event::Dimensions { width, height } => {
                 debug!(
                     target: "fenestre::state::handlers",
                     "RiverOutputV1 event: Dimensions updated to ({width}, {height})"
                 );
-                if let Some((_, output)) = state.find_output_mut_by_proxy(proxy) {
-                    output.set_dimensions(width, height);
-                    state.request_manage_dirty();
-                }
-                // The output rect now exists, so re-run rule evaluation for its
-                // windows: those whose rules were deferred because the output
-                // geometry wasn't ready when their metadata arrived can now apply.
-                if let Some(output_id) = state.outputs_by_proxy.get(proxy).copied() {
-                    let proxies: Vec<RiverWindowV1> = state
-                        .windows_for_output(output_id)
-                        .map(|set| {
-                            set.iter()
-                                .filter_map(|id| {
-                                    state.windows.get(id).and_then(|w| w.river_window.clone())
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    for rw in &proxies {
-                        state.evaluate_window_rules(rw);
-                    }
-                }
+                let Some(output_id) = state.outputs_by_proxy.get(proxy).copied() else {
+                    return;
+                };
+                let event = super::events::Event::OutputDimensionsUpdated {
+                    output_id,
+                    w: width,
+                    h: height,
+                };
+                state.handle_event(event);
             }
             Event::CaptureSessions { count } => {
                 debug!(
@@ -495,27 +446,24 @@ impl Dispatch<RiverSeatV1, ()> for WMState {
         use crate::protocol::river::river_window_management_v1::client::river_seat_v1::Event;
         match event {
             Event::Removed => {
-                // Remove the seat from runtime state, destroy its River proxy,
-                // and rebuild keybindings so removed seats no longer receive bindings.
                 debug!(target: "fenestre::state::handlers", "RiverSeatV1 event: Seat removed");
-                if let Some(seat_id) = state.remove_seat_by_proxy(proxy) {
-                    debug!(
-                        target: "fenestre::state::handlers",
-                        "RiverSeatV1 event: Seat removed, internal SeatId={seat_id:?}"
-                    );
+                let Some(seat_id) = state.seats_by_proxy.get(proxy).copied() else {
                     proxy.destroy();
-                    state.reconcile_keybindings();
-                    state.request_manage_dirty();
-                }
+                    return;
+                };
+                state.remove_seat(seat_id, proxy);
+                proxy.destroy();
             }
             Event::WlSeat { name } => {
                 debug!(
                     target: "fenestre::state::handlers",
                     "RiverSeatV1 event: WlSeat created with name {name}"
                 );
-                if let Some((_, seat)) = state.find_seat_mut_by_proxy(proxy) {
-                    seat.wl_seat_name = name;
-                }
+                let Some(seat_id) = state.seats_by_proxy.get(proxy).copied() else {
+                    return;
+                };
+                let event = super::events::Event::SeatNameUpdated { seat_id, name };
+                state.handle_event(event);
             }
             Event::PointerEnter { window } => {
                 debug!(
@@ -534,11 +482,11 @@ impl Dispatch<RiverSeatV1, ()> for WMState {
                     target: "fenestre::state::handlers",
                     "RiverSeatV1 event: Pointer interacted with window {window:?}"
                 );
-                if let Some((window_id, _)) = state.find_window_mut_by_proxy(&window)
-                    && state.focused_window != Some(window_id)
-                {
-                    state.focus_window_id(window_id);
-                }
+                let Some(window_id) = state.windows_by_proxy.get(&window).copied() else {
+                    return;
+                };
+                let event = super::events::Event::WindowInteraction { window_id };
+                state.handle_event(event);
             }
             Event::ShellSurfaceInteraction { shell_surface } => {
                 debug!(
@@ -563,9 +511,11 @@ impl Dispatch<RiverSeatV1, ()> for WMState {
                     target: "fenestre::state::handlers",
                     "RiverSeatV1 event: Pointer position updated to ({x}, {y})"
                 );
-                if let Some((_, seat)) = state.find_seat_mut_by_proxy(proxy) {
-                    seat.pointer_position = Some((x, y));
-                }
+                let Some(seat_id) = state.seats_by_proxy.get(proxy).copied() else {
+                    return;
+                };
+                let event = super::events::Event::SeatPointerPositionUpdated { seat_id, x, y };
+                state.handle_event(event);
             }
         }
     }

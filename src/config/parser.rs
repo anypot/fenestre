@@ -108,9 +108,15 @@ fn parse_keysym(name: &str) -> Option<u32> {
 pub(super) fn parse_mode(name: &str) -> Option<crate::layout::WindowState> {
     match name {
         "tiled" => Some(crate::layout::WindowState::Tiled),
-        "floating" => Some(crate::layout::WindowState::Floating),
-        "pseudo_tiled" => Some(crate::layout::WindowState::PseudoTiled),
-        "fullscreen" => Some(crate::layout::WindowState::Fullscreen),
+        "floating" => Some(crate::layout::WindowState::Floating {
+            rect: crate::layout::Rect::new(0, 0, 0, 0),
+        }),
+        "pseudo_tiled" => Some(crate::layout::WindowState::PseudoTiled {
+            rect: crate::layout::Rect::new(0, 0, 0, 0),
+        }),
+        "fullscreen" => Some(crate::layout::WindowState::Fullscreen {
+            restore: Box::new(crate::layout::WindowState::Tiled),
+        }),
         _ => None,
     }
 }
@@ -713,15 +719,21 @@ mod tests {
         assert_eq!(parse_mode("tiled"), Some(crate::layout::WindowState::Tiled));
         assert_eq!(
             parse_mode("floating"),
-            Some(crate::layout::WindowState::Floating)
+            Some(crate::layout::WindowState::Floating {
+                rect: crate::layout::Rect::new(0, 0, 0, 0)
+            })
         );
         assert_eq!(
             parse_mode("pseudo_tiled"),
-            Some(crate::layout::WindowState::PseudoTiled)
+            Some(crate::layout::WindowState::PseudoTiled {
+                rect: crate::layout::Rect::new(0, 0, 0, 0)
+            })
         );
         assert_eq!(
             parse_mode("fullscreen"),
-            Some(crate::layout::WindowState::Fullscreen)
+            Some(crate::layout::WindowState::Fullscreen {
+                restore: Box::new(crate::layout::WindowState::Tiled)
+            })
         );
         assert_eq!(parse_mode("invalid"), None);
     }

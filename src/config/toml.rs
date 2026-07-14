@@ -423,7 +423,12 @@ mod tests {
             config.rules[0].app_id,
             Some(RulePattern::Exact(ref s)) if s == "foot"
         ));
-        assert_eq!(config.rules[0].target, WindowState::Floating);
+        assert_eq!(
+            config.rules[0].target,
+            WindowState::Floating {
+                rect: Rect::new(0, 0, 0, 0)
+            }
+        );
     }
 
     #[test]
@@ -493,7 +498,12 @@ mod tests {
         let rule = &config.rules[0];
         assert!(matches!(rule.app_id, Some(RulePattern::Regex(_))));
         assert!(matches!(rule.title, Some(RulePattern::Regex(_))));
-        assert_eq!(rule.target, WindowState::Fullscreen);
+        assert_eq!(
+            rule.target,
+            WindowState::Fullscreen {
+                restore: Box::new(WindowState::Tiled)
+            }
+        );
         assert_eq!(rule.floating_rect, Some(Rect::new(10, 20, 800, 600)));
     }
 

@@ -32,16 +32,4 @@ impl Seat {
             pointer_position: None,
         }
     }
-
-    /// Focus a window, returning `true` only if the seat actually issued the
-    /// River focus request (i.e. both the seat proxy and the window proxy are
-    /// present). Callers use this to know whether the focus was applied.
-    pub(super) fn focus_window(&self, window: &super::window::Window) -> bool {
-        if let (Some(river_seat), Some(river_window)) = (&self.river_seat, &window.river_window) {
-            river_seat.focus_window(river_window);
-            true
-        } else {
-            false
-        }
-    }
 }

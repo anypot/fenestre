@@ -4,21 +4,29 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
+use super::effects::Effect;
+use super::events::Event;
 use super::keybindings::{KeyBinding, XkbBindingId};
 use super::output::{Output, OutputId};
 use super::seat::{Seat, SeatId};
 use super::window::{Window, WindowId};
 use crate::config::Config;
-use crate::layout::{LayoutTree, Rect};
-use crate::protocol::river::river_window_management_v1::client::river_output_v1::RiverOutputV1;
-use crate::protocol::river::river_window_management_v1::client::river_seat_v1::RiverSeatV1;
-use crate::protocol::river::river_window_management_v1::client::river_window_manager_v1::RiverWindowManagerV1;
-use crate::protocol::river::river_window_management_v1::client::river_window_v1::Edges;
-use crate::protocol::river::river_window_management_v1::client::river_window_v1::RiverWindowV1;
-use crate::protocol::river::river_xkb_bindings_v1::client::river_xkb_binding_v1::RiverXkbBindingV1;
-use crate::protocol::river::river_xkb_bindings_v1::client::river_xkb_bindings_v1::RiverXkbBindingsV1;
+use crate::layout::{LayoutTree, Rect, WindowState};
 use log::debug;
 use wayland_client::QueueHandle;
+
+/// A single window's entry in a desired scene snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SceneEntry {
+    pub(crate) window_id: WindowId,
+    pub(crate) output_id: OutputId,
+    pub(crate) rect: Rect,
+    pub(crate) state: WindowState,
+    pub(crate) z: (u8, u8, u32),
+    pub(crate) border: Option<(i32, u32, u32, u32, u32)>,
+}
+
+pub(super) type SceneSnapshot = Vec<SceneEntry>;
 
 /// Owns all mutable compositor state for the window manager.
 ///
@@ -29,8 +37,8 @@ use wayland_client::QueueHandle;
 /// Protocol event handlers mutate this state. Configuration reconciliation updates
 /// runtime keybindings and queues window-rule reapplication.
 pub(crate) struct WMState {
-    pub(super) wm: Option<RiverWindowManagerV1>,
-    pub(super) xkb_bindings: Option<RiverXkbBindingsV1>,
+    pub(super) wm: Option<crate::protocol::river::river_window_management_v1::client::river_window_manager_v1::RiverWindowManagerV1>,
+    pub(super) xkb_bindings: Option<crate::protocol::river::river_xkb_bindings_v1::client::river_xkb_bindings_v1::RiverXkbBindingsV1>,
     pub(super) config: Option<Config>,
     pub(super) config_path: Option<PathBuf>,
 
@@ -49,7 +57,7 @@ pub(crate) struct WMState {
     /// True when desired xkb bindings differ from configured River binding objects.
     pub(super) xkb_bindings_dirty: bool,
     /// River xkb binding protocol objects queued for destruction during the next manage sequence.
-    pub(super) pending_xkb_binding_destroys: Vec<RiverXkbBindingV1>,
+    pub(super) pending_xkb_binding_destroys: Vec<crate::protocol::river::river_xkb_bindings_v1::client::river_xkb_binding_v1::RiverXkbBindingV1>,
     /// Window rules loaded from config, applied per-window when metadata is known.
     pub(super) window_rules: Option<super::rule::WindowRules>,
     /// Window ID to focus during the next manage sequence.
@@ -60,6 +68,13 @@ pub(crate) struct WMState {
     /// Cached sorted window IDs for render stacking order.
     pub(super) render_order_cache: Vec<WindowId>,
 
+    /// Snapshot of the last desired scene from a manage cycle, used to diff
+    /// manage-phase effects (dimensions, fullscreen, server-side decorations).
+    pub(super) last_manage_scene: SceneSnapshot,
+    /// Snapshot of the last desired scene from a render cycle, used to diff
+    /// render-phase effects (position, z-order, borders).
+    pub(super) last_render_scene: SceneSnapshot,
+
     /// Next identifiers for internal ID allocation.
     next_window_id: WindowId,
     next_output_id: OutputId,
@@ -67,9 +82,9 @@ pub(crate) struct WMState {
     next_xkb_binding_id: XkbBindingId,
 
     /// Proxy-to-ID indexes for O(1) lookup by Wayland object.
-    pub(super) windows_by_proxy: HashMap<RiverWindowV1, WindowId>,
-    pub(super) outputs_by_proxy: HashMap<RiverOutputV1, OutputId>,
-    pub(super) seats_by_proxy: HashMap<RiverSeatV1, SeatId>,
+    pub(super) windows_by_proxy: HashMap<crate::protocol::river::river_window_management_v1::client::river_window_v1::RiverWindowV1, WindowId>,
+    pub(super) outputs_by_proxy: HashMap<crate::protocol::river::river_window_management_v1::client::river_output_v1::RiverOutputV1, OutputId>,
+    pub(super) seats_by_proxy: HashMap<crate::protocol::river::river_window_management_v1::client::river_seat_v1::RiverSeatV1, SeatId>,
 
     /// Windows grouped by output for O(1) lookup of which windows belong to
     /// a given output. Currently keyed by `OutputId`; if River exposes a
@@ -111,6 +126,8 @@ impl WMState {
             next_seat_id: SeatId(0),
             next_xkb_binding_id: XkbBindingId(0),
             render_order_cache: Vec::new(),
+            last_manage_scene: Vec::new(),
+            last_render_scene: Vec::new(),
             windows_by_proxy: HashMap::new(),
             outputs_by_proxy: HashMap::new(),
             seats_by_proxy: HashMap::new(),
@@ -240,25 +257,11 @@ impl WMState {
         self.tree_for_output(focused_output)
     }
 
-    /// Resolve a River window proxy to its per-output `LayoutTree`.
-    pub(super) fn tree_for_window_proxy(
-        &mut self,
-        proxy: &RiverWindowV1,
-    ) -> Option<(WindowId, &mut LayoutTree)> {
-        let window_id = self.windows_by_proxy.get(proxy).copied()?;
-        let output_id = self.windows.get(&window_id)?.output_id;
-        let tree = self.tree_for_output(output_id)?;
-        Some((window_id, tree))
-    }
-
-    /// Run window rules against a newly updated window proxy.
+    /// Run window rules against a newly updated window.
     ///
-    /// Called from `Handlers` when metadata arrives so rules can match as
+    /// Called from `handle_event` when metadata arrives so rules can match as
     /// soon as identifiers are known.
-    pub(super) fn evaluate_window_rules(&mut self, proxy: &RiverWindowV1) {
-        let Some(window_id) = self.windows_by_proxy.get(proxy).copied() else {
-            return;
-        };
+    pub(super) fn evaluate_window_rules(&mut self, window_id: WindowId) {
         let Some(output_id) = self.windows.get(&window_id).map(|w| w.output_id) else {
             return;
         };
@@ -286,6 +289,63 @@ impl WMState {
         if changed && let Some(wm) = &self.wm {
             wm.manage_dirty();
         }
+    }
+
+    /// Resolve a window ID to its per-output `LayoutTree`.
+    pub(super) fn tree_for_window_id(
+        &mut self,
+        window_id: WindowId,
+    ) -> Option<(WindowId, &mut LayoutTree)> {
+        let output_id = self.windows.get(&window_id)?.output_id;
+        let tree = self.tree_for_output(output_id)?;
+        Some((window_id, tree))
+    }
+
+    /// Find an output by internal ID.
+    pub(super) fn find_output_mut_by_proxy_id(
+        &mut self,
+        output_id: OutputId,
+    ) -> Option<(OutputId, &mut Output)> {
+        self.outputs
+            .get_mut(&output_id)
+            .map(|output| (output_id, output))
+    }
+
+    /// Find a seat by internal ID.
+    pub(super) fn find_seat_mut_by_id(&mut self, seat_id: SeatId) -> Option<(SeatId, &mut Seat)> {
+        self.seats.get_mut(&seat_id).map(|seat| (seat_id, seat))
+    }
+
+    /// Remove an output by internal ID.
+    pub(super) fn remove_output_by_id(
+        &mut self,
+        output_id: OutputId,
+        fallback_output: Option<OutputId>,
+    ) -> Option<OutputId> {
+        let removed_was_focused = self.focused_output == Some(output_id);
+        self.outputs.remove(&output_id);
+
+        if removed_was_focused {
+            self.focused_output = fallback_output.or_else(|| self.outputs.keys().next().copied());
+        }
+
+        Some(output_id)
+    }
+
+    /// Remove a seat by internal ID.
+    pub(super) fn remove_seat_by_id(&mut self, seat_id: SeatId) -> Option<SeatId> {
+        let removed_was_current = self.current_seat == Some(seat_id);
+        self.seats.remove(&seat_id);
+
+        if removed_was_current
+            || self
+                .current_seat
+                .is_some_and(|current| !self.seats.contains_key(&current))
+        {
+            self.current_seat = self.seats.first_key_value().map(|(id, _)| *id);
+        }
+
+        Some(seat_id)
     }
 
     /// Move all windows from one output's tree into another output's tree.
@@ -407,48 +467,38 @@ impl WMState {
         for win_id in window_ids {
             if let Some(window) = self.windows.get(&WindowId(*win_id)) {
                 let pseudo_rect = window.pseudo_tiled_rect(to_rect, float_ratio);
-                // Derive the plan from the authoritative tree state rather than
-                // the window's cached `mode`; float geometry comes from the
-                // node's `floating_rect`.
                 let plan = match from_tree.window_state(*win_id) {
-                    Some(crate::layout::WindowState::Floating) => {
-                        let r = from_tree
-                            .window_floating_rect(*win_id)
-                            .expect("window_floating_rect always returns Some for window in tree");
-                        ReassignPlan::Floating(crate::layout::Rect::new(
-                            r.x.saturating_add(dx),
-                            r.y.saturating_add(dy),
-                            r.width,
-                            r.height,
-                        ))
-                    }
-                    Some(crate::layout::WindowState::PseudoTiled) => {
-                        ReassignPlan::PseudoTiled(pseudo_rect)
-                    }
-                    Some(crate::layout::WindowState::Fullscreen) => {
-                        match from_tree.window_base_state(*win_id) {
-                            Some(crate::layout::WindowState::PseudoTiled) => {
-                                ReassignPlan::FullscreenPseudo(pseudo_rect)
-                            }
-                            Some(crate::layout::WindowState::Floating) => {
-                                ReassignPlan::FullscreenFloating(
-                                    from_tree
-                                        .window_floating_rect(*win_id)
-                                        .map(|r| {
-                                            crate::layout::Rect::new(
-                                                r.x.saturating_add(dx),
-                                                r.y.saturating_add(dy),
-                                                r.width,
-                                                r.height,
-                                            )
-                                        })
-                                        .expect("window_floating_rect always returns Some for window in tree"),
-                                )
-                            }
-                            _ => ReassignPlan::FullscreenTiled,
+                    Some(state) => match state {
+                        crate::layout::WindowState::Floating { rect } => {
+                            ReassignPlan::Floating(crate::layout::Rect::new(
+                                rect.x.saturating_add(dx),
+                                rect.y.saturating_add(dy),
+                                rect.width,
+                                rect.height,
+                            ))
                         }
-                    }
-                    Some(crate::layout::WindowState::Tiled) | None => ReassignPlan::Tiled,
+                        crate::layout::WindowState::PseudoTiled { .. } => {
+                            ReassignPlan::PseudoTiled(pseudo_rect)
+                        }
+                        crate::layout::WindowState::Fullscreen { restore } => {
+                            match restore.as_ref() {
+                                crate::layout::WindowState::PseudoTiled { .. } => {
+                                    ReassignPlan::FullscreenPseudo(pseudo_rect)
+                                }
+                                crate::layout::WindowState::Floating { rect } => {
+                                    ReassignPlan::FullscreenFloating(crate::layout::Rect::new(
+                                        rect.x.saturating_add(dx),
+                                        rect.y.saturating_add(dy),
+                                        rect.width,
+                                        rect.height,
+                                    ))
+                                }
+                                _ => ReassignPlan::FullscreenTiled,
+                            }
+                        }
+                        _ => ReassignPlan::Tiled,
+                    },
+                    None => ReassignPlan::Tiled,
                 };
                 plans.insert(*win_id, plan);
             }
@@ -531,177 +581,346 @@ impl WMState {
         }
     }
 
+    /// Compute the desired scene as a read-only function of current state.
+    ///
+    /// Each output tree must already be arranged: the manage phase calls
+    /// `LayoutTree::arranged_windows`, which populates node geometry from
+    /// `output_rect`. This function only reads that geometry plus per-window
+    /// decoration and focus state, snapshots each window's intended rect, state,
+    /// z-priority, and border appearance, and returns the full scene. It
+    /// performs no mutation. The manage and render callers each diff this
+    /// against their own last snapshot (`last_manage_scene` /
+    /// `last_render_scene`) to produce protocol effects.
+    pub(super) fn desired_scene(&self) -> SceneSnapshot {
+        let mut scene = Vec::new();
+        let decorations = self.config.as_ref().map(|c| c.decorations).unwrap_or(true);
+        let border_width = self
+            .config
+            .as_ref()
+            .and_then(|c| c.border_width)
+            .unwrap_or(0);
+        let (rgba_focused, rgba_unfocused) = self
+            .config
+            .as_ref()
+            .map(|c| c.border_rgba())
+            .unwrap_or(((0xff, 0xff, 0xff, 0xff), (0xff, 0xff, 0xff, 0xff)));
+
+        for (output_id, tree) in self.output_trees.iter() {
+            if !self.outputs.contains_key(output_id) {
+                continue;
+            }
+            let arranged = tree.arranged_windows_readonly();
+            for (window_id, window_rect, state) in arranged {
+                let window_id = WindowId(window_id);
+                let Some(window) = self.windows.get(&window_id) else {
+                    continue;
+                };
+
+                let mode_priority = mode_priority(&state);
+                let focus_priority = if self.focused_window == Some(window_id) {
+                    1
+                } else {
+                    0
+                };
+                let z = (mode_priority, focus_priority, window_id.0);
+
+                let use_decor = window.use_client_decorations(decorations);
+                let border = if use_decor {
+                    None
+                } else {
+                    let rgba = if self.focused_window == Some(window_id) {
+                        rgba_focused
+                    } else {
+                        rgba_unfocused
+                    };
+                    Some((border_width, rgba.0, rgba.1, rgba.2, rgba.3))
+                };
+
+                scene.push(SceneEntry {
+                    window_id,
+                    output_id: *output_id,
+                    rect: window_rect,
+                    state,
+                    z,
+                    border,
+                });
+            }
+        }
+
+        scene
+    }
+
     /// Apply pending BSP layout and window-management requests in a manage sequence.
-    pub(super) fn apply_manage(&mut self, _qh: &QueueHandle<Self>) {
+    pub(super) fn apply_manage(&mut self, _qh: &QueueHandle<Self>) -> Vec<Effect> {
         self.ensure_focused_output();
 
-        let decorations = self.config.as_ref().map(|c| c.decorations).unwrap_or(true);
-
+        // Manage-phase arrange: set each output tree's geometry and lay out its
+        // windows, persisting the arranged rect on every window so downstream
+        // layout (e.g. pseudo-tiled centering) and the render phase observe
+        // current geometry. `desired_scene` is read-only and relies on this
+        // having run first.
         for (output_id, tree) in self.output_trees.iter_mut() {
             let Some(output) = self.outputs.get(output_id) else {
-                continue;
-            };
-            let Some(output_proxy) = output.river_output.as_ref() else {
                 continue;
             };
             if let Some(rect) = output.rect() {
                 tree.set_output_rect(rect);
             }
-            let arranged = tree.arranged_windows();
-            for (window_id, window_rect, state) in arranged {
-                let window_id = WindowId(window_id);
-                let Some(window) = self.windows.get_mut(&window_id) else {
-                    continue;
-                };
-
-                window.set_layout_rect(window_rect);
-                if let Some(river_window) = window.river_window.as_ref() {
-                    if !window.use_client_decorations(decorations) {
-                        river_window.use_ssd();
-                    }
-                    match state {
-                        crate::layout::WindowState::Tiled
-                        | crate::layout::WindowState::Floating
-                        | crate::layout::WindowState::PseudoTiled => {
-                            if window.mode == crate::layout::WindowState::Fullscreen {
-                                river_window.exit_fullscreen();
-                            }
-                            // Propose the arranged rect directly. Do NOT route this
-                            // through `preferred_dimensions`: it would reuse a stale
-                            // reported size (e.g. the fullscreen dimensions an app
-                            // reports while fullscreened) after a fullscreen
-                            // round-trip.
-                            river_window.propose_dimensions(window_rect.width, window_rect.height);
-                        }
-                        crate::layout::WindowState::Fullscreen => {
-                            if window.mode != crate::layout::WindowState::Fullscreen {
-                                river_window.fullscreen(output_proxy);
-                            }
-                        }
-                    }
+            for (window_id, window_rect, _state) in tree.arranged_windows() {
+                if let Some(window) = self.windows.get_mut(&WindowId(window_id)) {
+                    window.set_layout_rect(window_rect);
                 }
-                // Record the state we just applied so the next manage cycle can
-                // detect fullscreen enter/leave transitions.
-                window.mode = state;
             }
         }
 
-        self.render_order_cache.clear();
+        let desired = self.desired_scene();
+        let mut effects = Vec::new();
 
-        // Keep pending_focus queued until the focus can actually be applied.
-        // Seat creation requests another manage sequence, which will retry the
-        // pending focus. We only clear `pending_focus` when the seat issued the
-        // River focus request for real; if the seat or window proxy is missing
-        // the request is silently dropped by `Seat::focus_window` and we must
-        // keep `pending_focus` so the next manage sequence retries it.
+        let last_map: HashMap<WindowId, &SceneEntry> = self
+            .last_manage_scene
+            .iter()
+            .map(|e| (e.window_id, e))
+            .collect();
+
+        for entry in &desired {
+            let Some(last) = last_map.get(&entry.window_id) else {
+                match entry.state {
+                    WindowState::Fullscreen { .. } => {
+                        effects.push(Effect::Fullscreen {
+                            window_id: entry.window_id,
+                            output_id: entry.output_id,
+                        });
+                    }
+                    _ => {
+                        if matches!(
+                            entry.state,
+                            WindowState::Tiled
+                                | WindowState::Floating { .. }
+                                | WindowState::PseudoTiled { .. }
+                        ) {
+                            effects.push(Effect::ProposeDimensions {
+                                window_id: entry.window_id,
+                                width: entry.rect.width,
+                                height: entry.rect.height,
+                            });
+                        }
+                    }
+                }
+                if entry.border.is_some() {
+                    effects.push(Effect::UseSsd {
+                        window_id: entry.window_id,
+                    });
+                }
+                continue;
+            };
+
+            if last.state != entry.state {
+                match entry.state {
+                    WindowState::Fullscreen { .. } => {
+                        effects.push(Effect::Fullscreen {
+                            window_id: entry.window_id,
+                            output_id: entry.output_id,
+                        });
+                    }
+                    _ => {
+                        if matches!(last.state, WindowState::Fullscreen { .. }) {
+                            effects.push(Effect::ExitFullscreen {
+                                window_id: entry.window_id,
+                            });
+                        }
+                    }
+                }
+            }
+
+            if last.rect != entry.rect
+                && matches!(
+                    entry.state,
+                    WindowState::Tiled
+                        | WindowState::Floating { .. }
+                        | WindowState::PseudoTiled { .. }
+                )
+            {
+                effects.push(Effect::ProposeDimensions {
+                    window_id: entry.window_id,
+                    width: entry.rect.width,
+                    height: entry.rect.height,
+                });
+            }
+
+            // Entering server-side decorations (client → SSD) means River
+            // must be told to use SSD. `border` is `Some` precisely for
+            // server-decorated windows (see `desired_scene`), so emit on the
+            // None → Some decoration-mode flip.
+            if last.border.is_none() && entry.border.is_some() {
+                effects.push(Effect::UseSsd {
+                    window_id: entry.window_id,
+                });
+            }
+        }
+
         if let Some(window_id) = self.pending_focus {
             if !self.windows.contains_key(&window_id) {
                 self.pending_focus = None;
             } else if let Some(seat_id) = self.current_seat
                 && let Some(seat) = self.seats.get(&seat_id)
                 && let Some(window) = self.windows.get(&window_id)
-                && seat.focus_window(window)
+                && seat.river_seat.is_some()
+                && window.river_window.is_some()
             {
                 self.pending_focus = None;
+                effects.push(Effect::FocusWindow { window_id });
             }
         }
 
         let pending_closes = std::mem::take(&mut self.pending_closes);
         for window_id in pending_closes {
-            if let Some((_, window)) = self.find_window_mut_by_id(window_id)
-                && let Some(river_window) = window.river_window.as_ref()
-            {
-                river_window.close();
+            if self.windows.contains_key(&window_id) {
+                effects.push(Effect::Close { window_id });
             }
         }
+
+        self.last_manage_scene = desired;
+        self.render_order_cache.clear();
+        effects
     }
 
     /// Apply pending render-state requests in a render sequence.
-    pub(super) fn apply_render(&mut self, qh: &QueueHandle<Self>) {
+    pub(super) fn apply_render(&mut self) -> Vec<Effect> {
         if self.render_order_cache.is_empty() {
             self.update_render_order_cache();
         }
 
-        let config = self.config.as_ref();
-        let decor_default = config.map(|c| c.decorations).unwrap_or(true);
-        let border_width = config.and_then(|c| c.border_width).unwrap_or(0);
-        let border_color_focused = config
-            .and_then(|c| c.border_color_focused)
-            .unwrap_or(0xffffffff);
-        let border_color_unfocused = config
-            .and_then(|c| c.border_color_unfocused)
-            .unwrap_or(0xffffffff);
-        let (rgba_focused, rgba_unfocused) = config
-            .map(|c| c.border_rgba())
-            .unwrap_or(((0xff, 0xff, 0xff, 0xff), (0xff, 0xff, 0xff, 0xff)));
+        let desired = self.desired_scene();
+        let mut effects = Vec::new();
 
-        // Per-window border cache keyed on (width, effective_color).
-        // Cached state is invalidated when a window switches between
-        // client-side and server-side decorations so stale compositor
-        // borders are not left behind.
+        let last_map: HashMap<WindowId, &SceneEntry> = self
+            .last_render_scene
+            .iter()
+            .map(|e| (e.window_id, e))
+            .collect();
+        let desired_map: HashMap<WindowId, &SceneEntry> =
+            desired.iter().map(|e| (e.window_id, e)).collect();
+
         for window_id in &self.render_order_cache {
             let Some(window) = self.windows.get_mut(window_id) else {
                 continue;
             };
-            let Some(river_window) = window.river_window.as_ref() else {
+            if window.river_window.is_none() {
+                continue;
+            }
+
+            // Node creation is a River child-object call; route it through
+            // `Effect::EnsureNode` so the adapter owns the protocol call
+            // (it needs the `QueueHandle`) rather than the core.
+            if window.node.is_none() {
+                effects.push(Effect::EnsureNode {
+                    window_id: *window_id,
+                });
+            }
+
+            let Some(entry) = desired_map.get(window_id) else {
                 continue;
             };
 
-            if window.node.is_none() {
-                window.node = Some(river_window.get_node(qh, ()));
-            }
-
-            if let (Some(node), Some(rect)) = (window.node.as_ref(), window.layout_rect) {
-                node.set_position(rect.x, rect.y);
+            let Some(last) = last_map.get(window_id) else {
+                // Newly added window: emit the initial render-phase effects it
+                // would otherwise never receive (the diff below only handles
+                // windows already present in the last render snapshot).
+                // `EnsureNode` is pushed above and applied before this effect,
+                // so the node is ready by the time the adapter applies
+                // `SetPosition` — position the new window in the same cycle.
+                effects.push(Effect::SetPosition {
+                    window_id: *window_id,
+                    x: entry.rect.x,
+                    y: entry.rect.y,
+                });
                 if matches!(
-                    window.mode,
-                    crate::layout::WindowState::Floating | crate::layout::WindowState::Fullscreen
+                    entry.state,
+                    WindowState::Floating { .. } | WindowState::Fullscreen { .. }
                 ) {
-                    node.place_top();
+                    effects.push(Effect::PlaceTop {
+                        window_id: *window_id,
+                    });
                 }
+                if let Some((width, r, g, b, a)) = entry.border {
+                    effects.push(Effect::SetBorders {
+                        window_id: *window_id,
+                        edges: super::effects::ALL_EDGES,
+                        width,
+                        r,
+                        g,
+                        b,
+                        a,
+                    });
+                }
+                continue;
+            };
+
+            if let (Some(_node), true) = (window.node.as_ref(), last.rect != entry.rect) {
+                effects.push(Effect::SetPosition {
+                    window_id: *window_id,
+                    x: entry.rect.x,
+                    y: entry.rect.y,
+                });
             }
 
-            let use_decor = window.use_client_decorations(decor_default);
-            if use_decor {
-                if window.last_border.is_some() {
-                    window.last_border = None;
-                }
-            } else {
-                let effective_color = if self.focused_window == Some(*window_id) {
-                    border_color_focused
-                } else {
-                    border_color_unfocused
-                };
-                let desired = Some((border_width, effective_color));
-                if window.last_border == desired {
-                    continue;
-                }
-                window.last_border = desired;
+            if last.z != entry.z
+                && matches!(
+                    entry.state,
+                    WindowState::Floating { .. } | WindowState::Fullscreen { .. }
+                )
+            {
+                effects.push(Effect::PlaceTop {
+                    window_id: *window_id,
+                });
+            }
 
-                let (r, g, b, a) = if self.focused_window == Some(*window_id) {
-                    rgba_focused
-                } else {
-                    rgba_unfocused
-                };
-
-                if border_width > 0 {
-                    river_window.set_borders(Edges::all(), border_width, r, g, b, a);
-                } else {
-                    river_window.set_borders(Edges::empty(), 0, 0, 0, 0, 0);
-                }
+            if last.border != entry.border
+                && let Some((width, r, g, b, a)) = entry.border
+            {
+                effects.push(Effect::SetBorders {
+                    window_id: *window_id,
+                    edges: super::effects::ALL_EDGES,
+                    width,
+                    r,
+                    g,
+                    b,
+                    a,
+                });
             }
         }
+
+        self.last_render_scene = desired;
+        effects
     }
 
     /// Rebuild the cached render order based on current window states.
     fn update_render_order_cache(&mut self) {
         self.render_order_cache.clear();
         self.render_order_cache.extend(self.windows.keys().copied());
-        self.render_order_cache.sort_unstable_by_key(|id| {
-            render_stack_priority(self.windows.get(id), self.focused_window)
-        });
+
+        let mut priorities = Vec::new();
+        for id in &self.render_order_cache {
+            let state = self.window_state_for_id(*id);
+            priorities.push((*id, render_stack_priority(state, self.focused_window, *id)));
+        }
+        priorities.sort_unstable_by_key(|(_, p)| *p);
+        self.render_order_cache = priorities.into_iter().map(|(id, _)| id).collect();
     }
 
+    /// Resolve the current `WindowState` for a window from its output tree.
+    pub(super) fn window_state_for_id(&self, window_id: WindowId) -> Option<&WindowState> {
+        let output_id = self.windows.get(&window_id)?.output_id;
+        let tree = self.output_trees.get(&output_id)?;
+        tree.window_state(window_id.0)
+    }
+
+    /// Ensure `focused_output` points at a live output.
+    ///
+    /// Self-heals a stale `focused_output` (e.g. one whose output was removed)
+    /// by falling back to the first remaining output. Does NOT create a
+    /// `LayoutTree`: callers that only need read-only geometry use this instead
+    /// of `tree_for_output`, which builds a tree on a miss.
     pub(crate) fn ensure_focused_output(&mut self) {
         if self.focused_output.is_none()
             || !self.outputs.contains_key(&self.focused_output.unwrap())
@@ -726,15 +945,6 @@ impl WMState {
         output.rect()
     }
 
-    /// Find an output by its River output proxy.
-    pub(super) fn find_output_mut_by_proxy(
-        &mut self,
-        proxy: &RiverOutputV1,
-    ) -> Option<(OutputId, &mut Output)> {
-        let id = *self.outputs_by_proxy.get(proxy)?;
-        self.outputs.get_mut(&id).map(|output| (id, output))
-    }
-
     /// Find a window by internal ID.
     pub(super) fn find_window_mut_by_id(
         &mut self,
@@ -743,28 +953,7 @@ impl WMState {
         self.windows.get_mut(&id).map(|window| (id, window))
     }
 
-    /// Find a window by its River window proxy.
-    pub(super) fn find_window_mut_by_proxy(
-        &mut self,
-        proxy: &RiverWindowV1,
-    ) -> Option<(WindowId, &mut Window)> {
-        let id = *self.windows_by_proxy.get(proxy)?;
-        self.windows.get_mut(&id).map(|window| (id, window))
-    }
-
-    /// Apply a metadata update to a window and re-evaluate rules.
-    pub(super) fn apply_window_metadata(
-        &mut self,
-        proxy: &RiverWindowV1,
-        f: impl FnOnce(&mut Window),
-    ) {
-        if let Some((_, window)) = self.find_window_mut_by_proxy(proxy) {
-            f(window);
-            self.evaluate_window_rules(proxy);
-        }
-    }
-
-    /// Remove a window by its River window proxy.
+    /// Remove a window by its ID.
     ///
     /// Also clears `focused_window` if the removed window was focused.
     /// Reconcile the layout tree and global focus pointers after a window is
@@ -845,61 +1034,12 @@ impl WMState {
         }
     }
 
-    /// Remove an output by its River output proxy.
+    /// Push a window onto the front of the focus stack and mark it focused.
     ///
-    /// If the removed output was focused, `focused_output` is re-pointed to
-    /// `fallback_output` (the output windows were reassigned to, if any),
-    /// falling back to the first remaining output (or `None` if none remain).
-    /// This is the single owner of the focused-output fallback policy.
-    pub(super) fn remove_output_by_proxy(
-        &mut self,
-        proxy: &RiverOutputV1,
-        fallback_output: Option<OutputId>,
-    ) -> Option<OutputId> {
-        let output_id = *self.outputs_by_proxy.get(proxy)?;
-
-        let removed_was_focused = self.focused_output == Some(output_id);
-        self.outputs.remove(&output_id);
-        self.outputs_by_proxy.remove(proxy);
-
-        if removed_was_focused {
-            self.focused_output = fallback_output.or_else(|| self.outputs.keys().next().copied());
-        }
-
-        Some(output_id)
-    }
-
-    /// Find a seat by its River seat proxy.
-    pub(super) fn find_seat_mut_by_proxy(
-        &mut self,
-        proxy: &RiverSeatV1,
-    ) -> Option<(SeatId, &mut Seat)> {
-        let id = *self.seats_by_proxy.get(proxy)?;
-        self.seats.get_mut(&id).map(|seat| (id, seat))
-    }
-
-    /// Remove a seat by its River seat proxy.
-    pub(super) fn remove_seat_by_proxy(&mut self, proxy: &RiverSeatV1) -> Option<SeatId> {
-        let seat_id = *self.seats_by_proxy.get(proxy)?;
-
-        let removed_was_current = self.current_seat == Some(seat_id);
-        self.seats.remove(&seat_id);
-        self.seats_by_proxy.remove(proxy);
-
-        // Recompute current_seat only if the removed seat was current,
-        // or if the current seat is no longer present.
-        if removed_was_current
-            || self
-                .current_seat
-                .is_some_and(|current| !self.seats.contains_key(&current))
-        {
-            self.current_seat = self.seats.first_key_value().map(|(id, _)| *id);
-        }
-
-        Some(seat_id)
-    }
-
-    /// Push a window to the front of the focus stack and mark it focused.
+    /// Updates `focused_window` and `focused_output` (derived from the window's
+    /// own output) so the most recently focused window is always at the top.
+    /// Low-level helper; callers that also need tree focus and River sync should
+    /// use `focus_window_id` instead.
     pub(super) fn push_focus(&mut self, window_id: WindowId) {
         self.focus_stack.retain(|id| *id != window_id);
         self.focus_stack.insert(0, window_id);
@@ -947,29 +1087,185 @@ impl WMState {
             self.pending_focus = self.focused_window;
         }
     }
+
+    /// Process a domain event, mutating state.
+    pub(super) fn handle_event(&mut self, event: Event) {
+        match event {
+            Event::WindowCreated {
+                window_id,
+                target_output,
+            } => {
+                let window = Window::new(window_id, target_output);
+                self.windows.insert(window_id, window);
+                self.index_window_in_output(window_id, target_output);
+                self.ensure_tree_for_output(target_output)
+                    .insert_window(window_id.0);
+                self.push_focus(window_id);
+                self.pending_focus = Some(window_id);
+                self.request_manage_dirty();
+            }
+            Event::OutputCreated { output_id } => {
+                let output = Output::new(output_id);
+                self.outputs.insert(output_id, output);
+
+                let orphaned: Vec<OutputId> = self
+                    .output_trees
+                    .keys()
+                    .filter(|id| !self.outputs.contains_key(id))
+                    .copied()
+                    .collect();
+                for orphaned_id in orphaned {
+                    if self.focused_output == Some(orphaned_id) {
+                        self.focused_output = Some(output_id);
+                    }
+                    self.reassign_output(orphaned_id, output_id);
+                }
+
+                if self.focused_output.is_none() {
+                    self.focused_output = Some(output_id);
+                }
+            }
+            Event::SeatCreated { seat_id } => {
+                let seat = Seat::new(seat_id);
+                self.seats.insert(seat_id, seat);
+                if self.current_seat.is_none() {
+                    self.current_seat = Some(seat_id);
+                }
+                self.reconcile_keybindings();
+                self.request_manage_dirty();
+            }
+            Event::WindowClosed { window_id } => {
+                self.close_window_focus_reconcile(window_id);
+            }
+            Event::WindowInteraction { window_id } => {
+                if self.focused_window != Some(window_id) {
+                    self.focus_window_id(window_id);
+                }
+            }
+            Event::DimensionsHint {
+                window_id,
+                min_w,
+                min_h,
+                max_w,
+                max_h,
+            } => {
+                if let Some((_, window)) = self.find_window_mut_by_id(window_id) {
+                    window.set_dimensions_hint(min_w, min_h, max_w, max_h);
+                }
+            }
+            Event::AppIdUpdated { window_id, app_id } => {
+                if let Some((_, window)) = self.find_window_mut_by_id(window_id) {
+                    window.app_id = app_id;
+                }
+                self.evaluate_window_rules(window_id);
+            }
+            Event::TitleUpdated { window_id, title } => {
+                if let Some((_, window)) = self.find_window_mut_by_id(window_id) {
+                    window.title = title;
+                }
+                self.evaluate_window_rules(window_id);
+            }
+            Event::DecorationHintUpdated { window_id, hint } => {
+                if let Some((_, window)) = self.find_window_mut_by_id(window_id) {
+                    window.decoration_hint = Some(hint);
+                }
+            }
+            Event::PidUpdated { window_id, pid } => {
+                if let Some((_, window)) = self.find_window_mut_by_id(window_id) {
+                    window.pid = pid as i32;
+                }
+            }
+            Event::FullscreenRequested { window_id } => {
+                if let Some((_, tree)) = self.tree_for_window_id(window_id)
+                    && tree.toggle_fullscreen(window_id.0)
+                {
+                    self.request_manage_dirty();
+                }
+            }
+            Event::ExitFullscreenRequested { window_id } => {
+                if let Some((_, tree)) = self.tree_for_window_id(window_id)
+                    && tree.toggle_fullscreen(window_id.0)
+                {
+                    self.request_manage_dirty();
+                }
+            }
+            Event::OutputRemoved { output_id } => {
+                let reassign_target = self.outputs.keys().find(|k| **k != output_id).copied();
+                if let Some(to_id) = reassign_target {
+                    self.reassign_output(output_id, to_id);
+                }
+                self.windows_by_output.remove(&output_id);
+                let _ = self.remove_output_by_id(output_id, reassign_target);
+                self.request_manage_dirty();
+            }
+            Event::OutputPositionUpdated { output_id, x, y } => {
+                if let Some((_, output)) = self.find_output_mut_by_proxy_id(output_id) {
+                    output.set_position(x, y);
+                    self.request_manage_dirty();
+                }
+            }
+            Event::OutputDimensionsUpdated { output_id, w, h } => {
+                if let Some((_, output)) = self.find_output_mut_by_proxy_id(output_id) {
+                    output.set_dimensions(w, h);
+                    self.request_manage_dirty();
+                }
+                let window_ids: Vec<WindowId> = self
+                    .windows_for_output(output_id)
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .collect();
+                for window_id in window_ids {
+                    self.evaluate_window_rules(window_id);
+                }
+            }
+            Event::SeatRemoved { seat_id } => {
+                let _ = self.remove_seat_by_id(seat_id);
+                self.reconcile_keybindings();
+                self.request_manage_dirty();
+            }
+            Event::SeatNameUpdated { seat_id, name } => {
+                if let Some((_, seat)) = self.find_seat_mut_by_id(seat_id) {
+                    seat.wl_seat_name = name;
+                }
+            }
+            Event::SeatPointerPositionUpdated { seat_id, x, y } => {
+                if let Some((_, seat)) = self.find_seat_mut_by_id(seat_id) {
+                    seat.pointer_position = Some((x, y));
+                }
+            }
+        }
+    }
+}
+
+/// Map a window's layout state to its z-order mode priority.
+///
+/// Tiled / PseudoTiled sit at the bottom (0), floating above (1), and
+/// fullscreen on top (2). Shared by `desired_scene` and
+/// `render_stack_priority` so the priority rules live in exactly one place.
+fn mode_priority(state: &WindowState) -> u8 {
+    match state {
+        WindowState::Tiled | WindowState::PseudoTiled { .. } => 0,
+        WindowState::Floating { .. } => 1,
+        WindowState::Fullscreen { .. } => 2,
+    }
 }
 
 /// Compute the render stack priority for a window.
 /// Returns a tuple of (mode_priority, focus_priority, window_id) for deterministic z-ordering.
 fn render_stack_priority(
-    window: Option<&super::window::Window>,
+    state: Option<&WindowState>,
     focused_window: Option<super::window::WindowId>,
+    window_id: super::window::WindowId,
 ) -> (u8, u8, u32) {
-    let Some(window) = window else {
-        return (0, 0, 0);
-    };
-    let mode_priority = match window.mode {
-        crate::layout::WindowState::Tiled | crate::layout::WindowState::PseudoTiled => 0,
-        crate::layout::WindowState::Floating => 1,
-        crate::layout::WindowState::Fullscreen => 2,
-    };
-    let focus_priority = if focused_window == Some(window.id) {
+    let mode_priority = state.map(mode_priority).unwrap_or(0);
+    let focus_priority = if focused_window == Some(window_id) {
         1
     } else {
         0
     };
 
-    (mode_priority, focus_priority, window.id.0)
+    (mode_priority, focus_priority, window_id.0)
 }
 
 #[cfg(test)]
@@ -1413,17 +1709,15 @@ mod tests {
         let rect = crate::layout::Rect::new(0, 0, 100, 100);
         tree.toggle_pseudo_tiled(w1.0, rect);
         tree.toggle_fullscreen(w1.0);
-        // Mirror the layout state into the window record, as `apply_manage` does.
-        state.windows.get_mut(&w1).unwrap().mode = crate::layout::WindowState::Fullscreen;
 
         state.reassign_output(o1, o2);
 
         let o2_tree = state.tree_for_output(o2).unwrap();
-        // The captured `base_state` must survive as PseudoTiled, not clobber to Tiled.
-        assert_eq!(
-            o2_tree.window_base_state(w1.0),
-            Some(crate::layout::WindowState::PseudoTiled)
-        );
+        let fullscreen_state = o2_tree.window_state(w1.0).unwrap().clone();
+        let crate::layout::WindowState::Fullscreen { restore } = fullscreen_state else {
+            panic!("expected fullscreen");
+        };
+        assert_eq!(*restore, crate::layout::WindowState::PseudoTiled { rect });
         assert!(o2_tree.window_is_fullscreen(w1.0));
 
         // Un-fullscreening should return to PseudoTiled, not Tiled.
@@ -1433,7 +1727,10 @@ mod tests {
             .into_iter()
             .find(|(id, _, _)| *id == w1.0)
             .map(|(_, _, s)| s);
-        assert_eq!(state_after, Some(crate::layout::WindowState::PseudoTiled));
+        assert_eq!(
+            state_after,
+            Some(crate::layout::WindowState::PseudoTiled { rect })
+        );
     }
 
     /// Reassigning windows to another output must preserve split directions,
@@ -1847,8 +2144,8 @@ mod tests {
 
     /// Build a state with one pseudo-tiled window that has round-tripped through
     /// fullscreen (app reported fullscreen dimensions). Returns the state, the
-    /// output id, the window id, and the original pseudo-tiled width.
-    fn setup_pseudo_fullscreen_roundtrip() -> (WMState, OutputId, WindowId, i32) {
+    /// output id, the window id, and the original pseudo-tiled rect.
+    fn setup_pseudo_fullscreen_roundtrip() -> (WMState, OutputId, WindowId, Rect) {
         let mut state = WMState::new();
         let o = OutputId(1);
         let mut out = Output::new(o);
@@ -1869,21 +2166,17 @@ mod tests {
             .get(&w)
             .unwrap()
             .pseudo_tiled_rect(output_rect, ratio);
-        let pseudo_w = pseudo.width;
         state.tree_for_output(o).unwrap().set_window_state(
             w.0,
-            crate::layout::WindowState::PseudoTiled,
-            pseudo,
+            crate::layout::WindowState::PseudoTiled { rect: pseudo },
         );
-        state.windows.get_mut(&w).unwrap().mode = crate::layout::WindowState::PseudoTiled;
 
         // Round-trip through fullscreen. (The app-reported size while
         // fullscreened is no longer stored on the window, so there is nothing to
         // set here; the pseudo size must be preserved via the tree's stored rect.)
         state.tree_for_output(o).unwrap().toggle_fullscreen(w.0);
-        state.windows.get_mut(&w).unwrap().mode = crate::layout::WindowState::Fullscreen;
 
-        (state, o, w, pseudo_w)
+        (state, o, w, pseudo)
     }
 
     #[test]
@@ -1893,11 +2186,10 @@ mod tests {
         // reported while fullscreened. `apply_manage` proposes the arranged
         // `window_rect` directly for pseudo-tiled windows, which stays correct
         // because the pseudo `floating_rect` is preserved across the toggle.
-        let (mut state, o, w2, pseudo_w) = setup_pseudo_fullscreen_roundtrip();
+        let (mut state, o, w2, pseudo) = setup_pseudo_fullscreen_roundtrip();
 
         // Toggle fullscreen back -> pseudo.
         state.tree_for_output(o).unwrap().toggle_fullscreen(w2.0);
-        state.windows.get_mut(&w2).unwrap().mode = crate::layout::WindowState::PseudoTiled;
 
         // The arranged pseudo rect must be the original pseudo size, not the
         // stale fullscreen dimensions.
@@ -1908,9 +2200,12 @@ mod tests {
             .into_iter()
             .find(|(id, _, _)| *id == w2.0)
             .unwrap();
-        assert_eq!(state_w2, crate::layout::WindowState::PseudoTiled);
         assert_eq!(
-            window_rect.width, pseudo_w,
+            state_w2,
+            crate::layout::WindowState::PseudoTiled { rect: pseudo }
+        );
+        assert_eq!(
+            window_rect.width, pseudo.width,
             "pseudo window reused stale fullscreen dimensions"
         );
     }
@@ -1921,7 +2216,7 @@ mod tests {
         // restore its pre-fullscreen (output-fraction) size, not reuse the
         // fullscreen dimensions the app reports while fullscreened. This covers
         // the `resolve_toggle_rect` path that `apply_manage` does not.
-        let (mut state, _o, w, pseudo_w) = setup_pseudo_fullscreen_roundtrip();
+        let (mut state, _o, w, pseudo) = setup_pseudo_fullscreen_roundtrip();
 
         // Toggle directly to floating from fullscreen.
         state.toggle_focused_floating();
@@ -1933,9 +2228,12 @@ mod tests {
             .into_iter()
             .find(|(id, _, _)| *id == w.0)
             .unwrap();
-        assert_eq!(state_w, crate::layout::WindowState::Floating);
         assert_eq!(
-            window_rect.width, pseudo_w,
+            state_w,
+            crate::layout::WindowState::Floating { rect: pseudo }
+        );
+        assert_eq!(
+            window_rect.width, pseudo.width,
             "float toggled from fullscreen reused stale fullscreen dimensions"
         );
     }
@@ -1944,7 +2242,7 @@ mod tests {
     fn toggle_from_fullscreen_to_pseudo_keeps_pseudo_size() {
         // Same regression as above, but toggling to pseudo-tiled directly from
         // fullscreen instead of floating.
-        let (mut state, _o, w, pseudo_w) = setup_pseudo_fullscreen_roundtrip();
+        let (mut state, _o, w, pseudo) = setup_pseudo_fullscreen_roundtrip();
 
         state.toggle_focused_pseudo_tiled();
 
@@ -1955,10 +2253,337 @@ mod tests {
             .into_iter()
             .find(|(id, _, _)| *id == w.0)
             .unwrap();
-        assert_eq!(state_w, crate::layout::WindowState::PseudoTiled);
         assert_eq!(
-            window_rect.width, pseudo_w,
+            state_w,
+            crate::layout::WindowState::PseudoTiled { rect: pseudo }
+        );
+        assert_eq!(
+            window_rect.width, pseudo.width,
             "pseudo toggled from fullscreen reused stale fullscreen dimensions"
         );
+    }
+
+    /// A realistic reassignment where the source output holds a *mixed* set of
+    /// window modes (tiled / floating / pseudo-tiled / fullscreen). The
+    /// destination already has real geometry, so `reassign_output` takes the
+    /// `reassign_with_rebuild` path. Every window must keep its mode on the
+    /// destination, and floating rects must survive unchanged when source and
+    /// destination share the same logical origin.
+    #[test]
+    fn reassign_with_rebuild_preserves_mixed_mode_set() {
+        let mut state = WMState::new();
+        let o1 = OutputId(1);
+        let o2 = OutputId(2);
+        for (o, w, h) in [(o1, 1920, 1080), (o2, 1920, 1080)] {
+            let mut out = Output::new(o);
+            out.set_dimensions(w, h);
+            state.outputs.insert(o, out);
+        }
+        state.focused_output = Some(o1);
+
+        let tiled = WindowId(1);
+        let floating = WindowId(2);
+        let pseudo = WindowId(3);
+        let full = WindowId(4);
+        for w in [tiled, floating, pseudo, full] {
+            state.windows.insert(w, Window::new(w, o1));
+            state.tree_for_output(o1).unwrap().insert_window(w.0);
+            state.push_focus(w);
+        }
+
+        // Make the source tree hold every mode variant.
+        let o1_rect = crate::layout::Rect::new(0, 0, 1920, 1080);
+        let ratio = state.default_float_ratio();
+        let float_rect = crate::layout::Rect::new(100, 100, 400, 300);
+        state
+            .tree_for_output(o1)
+            .unwrap()
+            .toggle_floating(floating.0, float_rect);
+        let pseudo_rect = state
+            .windows
+            .get(&pseudo)
+            .unwrap()
+            .pseudo_tiled_rect(o1_rect, ratio);
+        state
+            .tree_for_output(o1)
+            .unwrap()
+            .toggle_pseudo_tiled(pseudo.0, pseudo_rect);
+        // Fullscreen with a plain Tiled base state.
+        state.tree_for_output(o1).unwrap().toggle_fullscreen(full.0);
+
+        state.reassign_output(o1, o2);
+
+        let o2_tree = state.tree_for_output(o2).unwrap();
+        assert_eq!(
+            o2_tree.window_state(tiled.0).cloned(),
+            Some(crate::layout::WindowState::Tiled)
+        );
+        assert_eq!(
+            o2_tree.window_state(floating.0).cloned(),
+            Some(crate::layout::WindowState::Floating { rect: float_rect })
+        );
+        assert_eq!(
+            o2_tree.window_state(pseudo.0).cloned(),
+            Some(crate::layout::WindowState::PseudoTiled { rect: pseudo_rect })
+        );
+        assert!(o2_tree.window_is_fullscreen(full.0));
+
+        // Floating rect preserved (source/dest share origin -> no translation).
+        let crate::layout::WindowState::Floating { rect } =
+            o2_tree.window_state(floating.0).unwrap().clone()
+        else {
+            panic!("expected floating");
+        };
+        assert_eq!(rect, float_rect);
+
+        // Fullscreen restore state preserved as Tiled (not clobbered).
+        let crate::layout::WindowState::Fullscreen { restore } =
+            o2_tree.window_state(full.0).unwrap().clone()
+        else {
+            panic!("expected fullscreen");
+        };
+        assert_eq!(*restore, crate::layout::WindowState::Tiled);
+
+        // Un-fullscreening returns to the base Tiled state.
+        o2_tree.toggle_fullscreen(full.0);
+        assert_eq!(
+            o2_tree.window_state(full.0).cloned(),
+            Some(crate::layout::WindowState::Tiled)
+        );
+    }
+
+    /// Reassign a fullscreen-over-floating window through the *rebuild* path
+    /// (destination has real geometry). The fullscreen base state must survive
+    /// as `Floating` and un-fullscreening must return to the exact float rect.
+    /// This covers the `FullscreenFloating` plan branch of `reassign_with_rebuild`.
+    #[test]
+    fn reassign_with_rebuild_preserves_fullscreen_floating_base() {
+        let mut state = WMState::new();
+        let o1 = OutputId(1);
+        let o2 = OutputId(2);
+        for (o, w, h) in [(o1, 1920, 1080), (o2, 1920, 1080)] {
+            let mut out = Output::new(o);
+            out.set_dimensions(w, h);
+            state.outputs.insert(o, out);
+        }
+        state.focused_output = Some(o1);
+
+        let w = WindowId(1);
+        state.windows.insert(w, Window::new(w, o1));
+        let tree = state.tree_for_output(o1).unwrap();
+        tree.insert_window(w.0);
+        let float_rect = crate::layout::Rect::new(200, 150, 500, 400);
+        tree.toggle_floating(w.0, float_rect);
+        tree.toggle_fullscreen(w.0);
+
+        state.reassign_output(o1, o2);
+
+        let o2_tree = state.tree_for_output(o2).unwrap();
+        assert!(o2_tree.window_is_fullscreen(w.0));
+        let crate::layout::WindowState::Fullscreen { restore } =
+            o2_tree.window_state(w.0).unwrap().clone()
+        else {
+            panic!("expected fullscreen");
+        };
+        assert_eq!(
+            *restore,
+            crate::layout::WindowState::Floating { rect: float_rect }
+        );
+
+        // Un-fullscreening returns to floating at the same rect.
+        o2_tree.toggle_fullscreen(w.0);
+        assert_eq!(
+            o2_tree.window_state(w.0).cloned(),
+            Some(crate::layout::WindowState::Floating { rect: float_rect })
+        );
+    }
+
+    /// Reassign a fullscreen-over-pseudo-tiled window through the *rebuild*
+    /// path. The fullscreen base state must survive as `PseudoTiled`. (The
+    /// existing `reassign_output_preserves_fullscreen_base_state` only exercises
+    /// the dimension-less `clone` path, so this covers the
+    /// `FullscreenPseudo` branch of `reassign_with_rebuild`.)
+    #[test]
+    fn reassign_with_rebuild_preserves_fullscreen_pseudo_base() {
+        let mut state = WMState::new();
+        let o1 = OutputId(1);
+        let o2 = OutputId(2);
+        for (o, w, h) in [(o1, 1920, 1080), (o2, 1920, 1080)] {
+            let mut out = Output::new(o);
+            out.set_dimensions(w, h);
+            state.outputs.insert(o, out);
+        }
+        state.focused_output = Some(o1);
+
+        let w = WindowId(1);
+        state.windows.insert(w, Window::new(w, o1));
+        let tree = state.tree_for_output(o1).unwrap();
+        tree.insert_window(w.0);
+        let rect = crate::layout::Rect::new(0, 0, 100, 100);
+        tree.toggle_pseudo_tiled(w.0, rect);
+        tree.toggle_fullscreen(w.0);
+
+        state.reassign_output(o1, o2);
+
+        let o2_tree = state.tree_for_output(o2).unwrap();
+        assert!(o2_tree.window_is_fullscreen(w.0));
+        let crate::layout::WindowState::Fullscreen { restore } =
+            o2_tree.window_state(w.0).unwrap().clone()
+        else {
+            panic!("expected fullscreen");
+        };
+        let expected_pseudo = crate::layout::Rect::new(480, 270, 960, 540);
+        assert_eq!(
+            *restore,
+            crate::layout::WindowState::PseudoTiled {
+                rect: expected_pseudo
+            }
+        );
+
+        // Un-fullscreening returns to pseudo-tiled.
+        o2_tree.toggle_fullscreen(w.0);
+        assert_eq!(
+            o2_tree.window_state(w.0).cloned(),
+            Some(crate::layout::WindowState::PseudoTiled {
+                rect: expected_pseudo
+            })
+        );
+    }
+
+    /// Reassign into a dimension-less (recreated) output while a window is
+    /// floating. The floating rect must be translated by the output position
+    /// delta `(dx, dy)` so the window stays under the cursor / in place on the
+    /// new output. This covers the floating-translation branch of
+    /// `reassign_clone_topology`.
+    #[test]
+    fn reassign_into_dimensionless_output_translates_floating_rects() {
+        let mut state = WMState::new();
+        let o1 = OutputId(1);
+        let o2 = OutputId(2);
+
+        // Source at the origin with a real floating window.
+        let mut out1 = Output::new(o1);
+        out1.set_dimensions(1920, 1080);
+        out1.set_position(0, 0);
+        state.outputs.insert(o1, out1);
+
+        let floating = WindowId(1);
+        state.windows.insert(floating, Window::new(floating, o1));
+        let tree = state.tree_for_output(o1).unwrap();
+        tree.insert_window(floating.0);
+        let src_rect = crate::layout::Rect::new(100, 50, 400, 300);
+        tree.toggle_floating(floating.0, src_rect);
+        state.push_focus(floating);
+
+        // Recreate o2 at a different position, geometry not yet known.
+        let mut out2 = Output::new(o2);
+        out2.set_position(1920, 0);
+        state.outputs.insert(o2, out2);
+
+        state.reassign_output(o1, o2);
+
+        // Give the recreated output real geometry and arrange.
+        let o2_rect = crate::layout::Rect::new(1920, 0, 1920, 1080);
+        state.tree_for_output(o2).unwrap().set_output_rect(o2_rect);
+
+        // Floating rect must be shifted by (dx=1920, dy=0).
+        let crate::layout::WindowState::Floating { rect: dst_rect } = state
+            .tree_for_output(o2)
+            .unwrap()
+            .window_state(floating.0)
+            .unwrap()
+            .clone()
+        else {
+            panic!("expected floating");
+        };
+        assert_eq!(dst_rect, crate::layout::Rect::new(100 + 1920, 50, 400, 300));
+    }
+
+    /// Closing the *globally focused* window when its output empties must fall
+    /// back to another output's window (via the global focus stack), not lose
+    /// focus or yank it elsewhere spuriously. This is the multi-output
+    /// reconciliation branch `was_globally_focused && next == Some(window on o2)`.
+    #[test]
+    fn closing_focused_window_when_output_empties_falls_back_to_other_output() {
+        let mut state = WMState::new();
+        let o1 = OutputId(1);
+        let o2 = OutputId(2);
+        for (o, x) in [(o1, 0), (o2, 1920)] {
+            let mut out = Output::new(o);
+            out.set_dimensions(1920, 1080);
+            out.set_position(x, 0);
+            state.outputs.insert(o, out);
+        }
+        state.focused_output = Some(o1);
+
+        // Only window on o1, and globally focused.
+        let a = WindowId(1);
+        state.windows.insert(a, Window::new(a, o1));
+        state.tree_for_output(o1).unwrap().insert_window(a.0);
+        state.push_focus(a);
+
+        // Two windows on o2; C is the last focused there (remembered fallback).
+        let b = WindowId(2);
+        let c = WindowId(3);
+        for w in [b, c] {
+            state.windows.insert(w, Window::new(w, o2));
+            state.tree_for_output(o2).unwrap().insert_window(w.0);
+            state.push_focus(w);
+        }
+
+        // Re-assert global focus on A (o1) while keeping B/C on the stack so the
+        // fallback after closing A lands on C (the surviving output's focus).
+        state.focus_window_id(a);
+        assert_eq!(state.focused_window, Some(a));
+        assert_eq!(state.focused_output, Some(o1));
+
+        // Close the only window on o1 -> o1 now empty.
+        state.close_window_focus_reconcile(a);
+
+        // Focus must fall back to C on o2 (the global focus stack top).
+        assert_eq!(
+            state.focused_window,
+            Some(c),
+            "focus lost when the focused output emptied"
+        );
+        assert_eq!(
+            state.focused_output,
+            Some(o2),
+            "focus did not move to the surviving output"
+        );
+        assert!(state.windows.contains_key(&c), "sibling lost on fallback");
+        assert!(state.windows.contains_key(&b), "sibling lost on fallback");
+        assert!(
+            !state.windows.contains_key(&a),
+            "closed window still present"
+        );
+    }
+
+    /// Closing the very last window in the WM must clear global focus and
+    /// pending focus cleanly (no dangling reference, no panic). This covers the
+    /// `was_globally_focused && next == None` fallback branch.
+    #[test]
+    fn closing_last_remaining_window_clears_focus() {
+        let mut state = WMState::new();
+        let o1 = OutputId(1);
+        let mut out = Output::new(o1);
+        out.set_dimensions(1920, 1080);
+        state.outputs.insert(o1, out);
+        state.focused_output = Some(o1);
+
+        let a = WindowId(1);
+        state.windows.insert(a, Window::new(a, o1));
+        state.tree_for_output(o1).unwrap().insert_window(a.0);
+        state.focus_window_id(a);
+        assert_eq!(state.focused_window, Some(a));
+
+        state.close_window_focus_reconcile(a);
+
+        assert_eq!(
+            state.focused_window, None,
+            "focus should clear when the last window is closed"
+        );
+        assert_eq!(state.pending_focus, None, "pending focus should clear");
+        assert!(!state.windows.contains_key(&a));
     }
 }

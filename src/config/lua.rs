@@ -328,7 +328,12 @@ mod tests {
             config.rules[0].app_id,
             Some(crate::state::rule::RulePattern::Exact(ref s)) if s == "foot"
         ));
-        assert_eq!(config.rules[0].target, crate::layout::WindowState::Floating);
+        assert_eq!(
+            config.rules[0].target,
+            crate::layout::WindowState::Floating {
+                rect: crate::layout::Rect::new(0, 0, 0, 0)
+            }
+        );
     }
 
     #[test]
@@ -470,7 +475,12 @@ mod tests {
             rule.title,
             Some(crate::state::rule::RulePattern::Regex(_))
         ));
-        assert_eq!(rule.target, crate::layout::WindowState::Fullscreen);
+        assert_eq!(
+            rule.target,
+            crate::layout::WindowState::Fullscreen {
+                restore: Box::new(crate::layout::WindowState::Tiled)
+            }
+        );
         assert_eq!(
             rule.floating_rect,
             Some(crate::layout::Rect::new(10, 20, 800, 600))
