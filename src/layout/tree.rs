@@ -2,12 +2,14 @@
 
 use crate::config::LayoutConfig;
 
+/// Axis along which a split divides its two children.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SplitDirection {
     Vertical,
     Horizontal,
 }
 
+/// Direction used for focus navigation, window moves, and resizes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FocusDirection {
     Left,
@@ -16,6 +18,11 @@ pub(crate) enum FocusDirection {
     Down,
 }
 
+/// Window layout state, carrying its own data so illegal states are
+/// unrepresentable.
+///
+/// `Floating` / `PseudoTiled` hold the window's rect; `Fullscreen` holds the
+/// pre-fullscreen state in `restore` so toggling fullscreen off returns to it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WindowState {
     Tiled,
@@ -77,6 +84,7 @@ enum RemoveOutcome {
 }
 
 impl Rect {
+    /// Construct a rectangle from its position and size components.
     pub(crate) fn new(x: i32, y: i32, width: i32, height: i32) -> Self {
         Self {
             x,
@@ -361,14 +369,17 @@ impl LayoutTree {
         }
     }
 
+    /// Cycle focus to the next window in the tree, wrapping around.
     pub(crate) fn focus_next(&mut self) -> bool {
         self.focus_relative(1)
     }
 
+    /// Cycle focus to the previous window in the tree, wrapping around.
     pub(crate) fn focus_previous(&mut self) -> bool {
         self.focus_relative(-1)
     }
 
+    /// Set focus to `id` if it is present in the tree; returns whether focus changed.
     pub(crate) fn focus_window(&mut self, id: u32) -> bool {
         if self.contains_window(id) {
             self.focused = Some(id);
@@ -521,12 +532,14 @@ impl LayoutTree {
         }
     }
 
+    /// Whether `id`'s state is `Floating`. Returns false if the window is absent.
     pub(crate) fn window_is_floating(&self, id: u32) -> bool {
         self.find_window_node(id)
             .map(|n| matches!(n.state, WindowState::Floating { .. }))
             .unwrap_or(false)
     }
 
+    /// Whether `id`'s state is `Fullscreen`. Returns false if the window is absent.
     pub(crate) fn window_is_fullscreen(&self, id: u32) -> bool {
         self.find_window_node(id)
             .map(|n| matches!(n.state, WindowState::Fullscreen { .. }))
@@ -539,6 +552,8 @@ impl LayoutTree {
         self.find_window_node(id).map(|n| &n.state)
     }
 
+    /// Nudge a `Floating` window by `delta_x`/`delta_y` in `direction`, clamped
+    /// to the output bounds. Returns false if the window is absent or not floating.
     pub(crate) fn move_floating_window(
         &mut self,
         id: u32,
@@ -589,6 +604,9 @@ impl LayoutTree {
         true
     }
 
+    /// Adjust the split ratio of the focused window's parent split in `direction`
+    /// by `delta`, clamped to `[0.1, 0.9]`. Returns false if there is no focused
+    /// window or no resizable parent split in that direction.
     pub(crate) fn resize_ratio(&mut self, direction: FocusDirection, delta: f64) -> bool {
         self.arrange();
 
@@ -694,6 +712,8 @@ impl LayoutTree {
         }
     }
 
+    /// Resize a `Floating` window by `delta_percent` of the output size in
+    /// `direction`. Returns false if the window is absent or not floating.
     pub(crate) fn resize_floating_window(
         &mut self,
         id: u32,
@@ -1035,6 +1055,7 @@ impl LayoutTree {
         self.find_window_node(id).map(|node| node.rect)
     }
 
+    /// Return the first window found in the tree (depth-first), or `None` if empty.
     pub(crate) fn first_window(&self) -> Option<u32> {
         fn first(node: &LayoutNode) -> Option<u32> {
             if let Some(window) = node.window {
@@ -1053,6 +1074,7 @@ impl LayoutTree {
         self.root.as_deref().and_then(first)
     }
 
+    /// Return the IDs of all windows in the tree.
     pub(crate) fn visible_windows(&self) -> Vec<u32> {
         let mut windows = Vec::new();
         if let Some(root) = self.root.as_ref() {

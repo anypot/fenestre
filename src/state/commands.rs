@@ -49,6 +49,11 @@ impl WMState {
         self.focus_window_id(WindowId(id));
     }
 
+    /// Move focus to the next window in the focused output's tree.
+    ///
+    /// Delegates to the layout tree's `focus_next` and syncs global focus via
+    /// `focus_current_layout_window`. No-op when there is no focused tree or the
+    /// tree reports no next window.
     pub(super) fn focus_next(&mut self) {
         if self.focused_tree().is_some_and(|tree| tree.focus_next()) {
             self.focus_current_layout_window();

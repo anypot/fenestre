@@ -915,6 +915,12 @@ impl WMState {
         tree.window_state(window_id.0)
     }
 
+    /// Ensure `focused_output` points at a live output.
+    ///
+    /// Self-heals a stale `focused_output` (e.g. one whose output was removed)
+    /// by falling back to the first remaining output. Does NOT create a
+    /// `LayoutTree`: callers that only need read-only geometry use this instead
+    /// of `tree_for_output`, which builds a tree on a miss.
     pub(crate) fn ensure_focused_output(&mut self) {
         if self.focused_output.is_none()
             || !self.outputs.contains_key(&self.focused_output.unwrap())
@@ -1028,7 +1034,12 @@ impl WMState {
         }
     }
 
-    /// Remove an output by internal ID.
+    /// Push a window onto the front of the focus stack and mark it focused.
+    ///
+    /// Updates `focused_window` and `focused_output` (derived from the window's
+    /// own output) so the most recently focused window is always at the top.
+    /// Low-level helper; callers that also need tree focus and River sync should
+    /// use `focus_window_id` instead.
     pub(super) fn push_focus(&mut self, window_id: WindowId) {
         self.focus_stack.retain(|id| *id != window_id);
         self.focus_stack.insert(0, window_id);

@@ -16,14 +16,18 @@ pub(crate) enum RulePattern {
 }
 
 impl RulePattern {
+    /// Build an `Exact` pattern: matched with `==`.
     pub(crate) fn exact(s: impl Into<String>) -> Self {
         RulePattern::Exact(s.into())
     }
 
+    /// Build a `Prefix` pattern: matched with `starts_with` (a `*`-style wildcard).
     pub(crate) fn prefix(s: impl Into<String>) -> Self {
         RulePattern::Prefix(s.into())
     }
 
+    /// Build a `Regex` pattern, compiling `s` with a 1 MiB size limit.
+    /// Returns `None` if the pattern fails to compile.
     pub(crate) fn regex(s: &str) -> Option<Self> {
         // size_limit bounds compile-time memory; matching still uses
         // backtracking semantics, so pathological patterns can slow runtime
@@ -51,7 +55,10 @@ pub(crate) struct WindowRule {
     /// Criterion matched against the window's `title`. `None` means "any".
     pub(crate) title: Option<RulePattern>,
 
+    /// Desired window state (`tiled` / `floating` / `pseudo_tiled` / `fullscreen`).
     pub(crate) target: WindowState,
+    /// Optional explicit rect for `floating` / `pseudo_tiled` targets; when
+    /// `None`, a ratio-based size is used (see `WindowRules::evaluate`).
     pub(crate) floating_rect: Option<Rect>,
 }
 
@@ -61,6 +68,10 @@ pub(super) struct WindowRules {
 }
 
 impl WindowRules {
+    /// Build a `WindowRules` matcher from an ordered list of rules.
+    ///
+    /// Rules are evaluated in order; a later matching rule overrides an earlier
+    /// one for the same property (later wins).
     pub(super) fn new(rules: Vec<WindowRule>) -> Self {
         Self { rules }
     }
