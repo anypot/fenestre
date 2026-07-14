@@ -48,6 +48,80 @@ Paths still worth pinning down:
 Estimated effort: **0.5–1 day**, but re-baseline after the audit — likely
 toward the low end given existing coverage. Everything downstream depends on it.
 
+### Phase 0 — Coverage audit (baseline)
+
+Measured with `cargo llvm-cov` against the full test suite (172 tests, all
+passing) on 2026-07-14. Per-file line coverage of the risky paths:
+
+| File | Coverage |
+|------|----------|
+| `src/state/output.rs` | 100.0% |
+| `src/state/rule.rs` | 99.1% |
+| `src/layout/tree.rs` | 95.5% |
+| `src/state/window.rs` | 92.6% |
+| `src/state/wm.rs` | 73.4% |
+| `src/state/commands.rs` | 18.0% |
+| `src/state/handlers.rs` | 0.0% |
+| **all instrumented files** | **78.8%** |
+
+Function-level coverage of the named risky functions (before this phase's
+characterization tests):
+
+| Function | Coverage | Notes |
+|----------|----------|-------|
+| `apply_manage` | 0/94 | **Blocked**: gated on live `river_output` / `river_window` proxies (`wm.rs:544`, `wm.rs:558`). Cannot be exercised without a running compositor or the Initiative 1 `Effect` collector. |
+| `apply_render` | 0/97 | Same proxy gate. |
+| `reassign_output` | 96/102 | Happy paths covered. |
+| `reassign_with_rebuild` | 49/99 | **Gap**: mixed-mode `ReassignPlan` branches (Floating / PseudoTiled / FullscreenPseudo / FullscreenFloating) untested. |
+| `reassign_clone_topology` | 17/20 | Floating-rect translation untested. |
+| `close_window_focus_reconcile` | 41/45 | **Gap**: empty-output fallback branches untested. |
+| `remove_output_by_proxy` / `remove_seat_by_proxy` | 0 | No tests (minor; low-risk bookkeeping). |
+
+`handlers.rs` at 0% is expected — it requires a live Wayland connection and is
+out of scope for unit characterization (Initiative 1's adapter split is the
+enabler there too).
+
+#### New characterization tests added (this phase)
+
+Six tests pinned the under-covered behaviour, all passing (suite 166 → 172):
+
+- `reassign_with_rebuild_preserves_mixed_mode_set` — a tiled + floating +
+  pseudo-tiled + fullscreen(source) window set reassigned into a real-geometry
+  destination keeps every mode and floating rect. Drives the `Tiled` / `Floating`
+  / `PseudoTiled` / `FullscreenTiled` plan branches through the **rebuild** path.
+- `reassign_with_rebuild_preserves_fullscreen_floating_base` — fullscreen-over-
+  floating reassigned via rebuild keeps `Floating` base state and exact float
+  rect on un-fullscreen. Covers `FullscreenFloating`.
+- `reassign_with_rebuild_preserves_fullscreen_pseudo_base` — same for
+  fullscreen-over-pseudo via rebuild (the existing `…preserves_fullscreen_base_state`
+  only exercised the dimension-less clone path). Covers `FullscreenPseudo`.
+- `reassign_into_dimensionless_output_translates_floating_rects` — a floating
+  window reassigned into a dimension-less recreated output has its rect shifted
+  by the output position delta. Covers the floating-translation branch of
+  `reassign_clone_topology`.
+- `closing_focused_window_when_output_empties_falls_back_to_other_output` —
+  closing the globally focused window when its output empties falls back to
+  another output's window via the focus stack (multi-output reconciliation).
+- `closing_last_remaining_window_clears_focus` — closing the last window clears
+  `focused_window` / `pending_focus` cleanly. Covers the `next == None` branch.
+
+After these tests: `reassign_with_rebuild` 49→**97/99**, `reassign_clone_topology`
+17→**20/20**, `close_window_focus_reconcile` 41→**42/45**. The 3 remaining
+uncovered regions in `close_window_focus_reconcile` are defensive branches (a
+window removed from the map, or whose output tree is already gone) — reachable
+only via contrived setups and not part of the named risk surface.
+
+#### Residual gap (deferred to Initiative 1)
+
+`apply_manage` / `apply_render` remain 0% unit coverage because both are gated
+on live River proxies. This is exactly the surface Initiative 1's `Effect`
+collector is meant to unlock: once the per-window protocol decisions are
+extracted into a pure function, the fullscreen enter/leave transition logic
+(using the cached `window.mode`) becomes directly testable without a compositor.
+The toggle round-trip tests already cover the layout-tree side of those
+transitions; only the `window.mode = state` cache assignment and the protocol
+emission in `apply_manage` (wm.rs:562–586) remain an integration-only path.
+
 ---
 
 ## Initiative 1 — Pure core + IO adapter (hexagonal) ★ top priority

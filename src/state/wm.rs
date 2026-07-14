@@ -1961,4 +1961,303 @@ mod tests {
             "pseudo toggled from fullscreen reused stale fullscreen dimensions"
         );
     }
+
+    /// A realistic reassignment where the source output holds a *mixed* set of
+    /// window modes (tiled / floating / pseudo-tiled / fullscreen). The
+    /// destination already has real geometry, so `reassign_output` takes the
+    /// `reassign_with_rebuild` path. Every window must keep its mode on the
+    /// destination, and floating rects must survive unchanged when source and
+    /// destination share the same logical origin.
+    #[test]
+    fn reassign_with_rebuild_preserves_mixed_mode_set() {
+        let mut state = WMState::new();
+        let o1 = OutputId(1);
+        let o2 = OutputId(2);
+        for (o, w, h) in [(o1, 1920, 1080), (o2, 1920, 1080)] {
+            let mut out = Output::new(o);
+            out.set_dimensions(w, h);
+            state.outputs.insert(o, out);
+        }
+        state.focused_output = Some(o1);
+
+        let tiled = WindowId(1);
+        let floating = WindowId(2);
+        let pseudo = WindowId(3);
+        let full = WindowId(4);
+        for w in [tiled, floating, pseudo, full] {
+            state.windows.insert(w, Window::new(w, o1));
+            state.tree_for_output(o1).unwrap().insert_window(w.0);
+            state.push_focus(w);
+        }
+
+        // Make the source tree hold every mode variant.
+        let o1_rect = crate::layout::Rect::new(0, 0, 1920, 1080);
+        let ratio = state.default_float_ratio();
+        let float_rect = crate::layout::Rect::new(100, 100, 400, 300);
+        state
+            .tree_for_output(o1)
+            .unwrap()
+            .toggle_floating(floating.0, float_rect);
+        let pseudo_rect = state
+            .windows
+            .get(&pseudo)
+            .unwrap()
+            .pseudo_tiled_rect(o1_rect, ratio);
+        state
+            .tree_for_output(o1)
+            .unwrap()
+            .toggle_pseudo_tiled(pseudo.0, pseudo_rect);
+        // Fullscreen with a plain Tiled base state.
+        state.tree_for_output(o1).unwrap().toggle_fullscreen(full.0);
+
+        state.reassign_output(o1, o2);
+
+        let o2_tree = state.tree_for_output(o2).unwrap();
+        assert_eq!(
+            o2_tree.window_state(tiled.0),
+            Some(crate::layout::WindowState::Tiled)
+        );
+        assert_eq!(
+            o2_tree.window_state(floating.0),
+            Some(crate::layout::WindowState::Floating)
+        );
+        assert_eq!(
+            o2_tree.window_state(pseudo.0),
+            Some(crate::layout::WindowState::PseudoTiled)
+        );
+        assert!(o2_tree.window_is_fullscreen(full.0));
+
+        // Floating rect preserved (source/dest share origin -> no translation).
+        assert_eq!(o2_tree.window_floating_rect(floating.0), Some(float_rect));
+
+        // Fullscreen base state preserved as Tiled (not clobbered).
+        assert_eq!(
+            o2_tree.window_base_state(full.0),
+            Some(crate::layout::WindowState::Tiled)
+        );
+
+        // Un-fullscreening returns to the base Tiled state.
+        o2_tree.toggle_fullscreen(full.0);
+        assert_eq!(
+            o2_tree.window_state(full.0),
+            Some(crate::layout::WindowState::Tiled)
+        );
+    }
+
+    /// Reassign a fullscreen-over-floating window through the *rebuild* path
+    /// (destination has real geometry). The fullscreen base state must survive
+    /// as `Floating` and un-fullscreening must return to the exact float rect.
+    /// This covers the `FullscreenFloating` plan branch of `reassign_with_rebuild`.
+    #[test]
+    fn reassign_with_rebuild_preserves_fullscreen_floating_base() {
+        let mut state = WMState::new();
+        let o1 = OutputId(1);
+        let o2 = OutputId(2);
+        for (o, w, h) in [(o1, 1920, 1080), (o2, 1920, 1080)] {
+            let mut out = Output::new(o);
+            out.set_dimensions(w, h);
+            state.outputs.insert(o, out);
+        }
+        state.focused_output = Some(o1);
+
+        let w = WindowId(1);
+        state.windows.insert(w, Window::new(w, o1));
+        let tree = state.tree_for_output(o1).unwrap();
+        tree.insert_window(w.0);
+        let float_rect = crate::layout::Rect::new(200, 150, 500, 400);
+        tree.toggle_floating(w.0, float_rect);
+        tree.toggle_fullscreen(w.0);
+
+        state.reassign_output(o1, o2);
+
+        let o2_tree = state.tree_for_output(o2).unwrap();
+        assert!(o2_tree.window_is_fullscreen(w.0));
+        assert_eq!(
+            o2_tree.window_base_state(w.0),
+            Some(crate::layout::WindowState::Floating)
+        );
+
+        // Un-fullscreening returns to floating at the same rect.
+        o2_tree.toggle_fullscreen(w.0);
+        assert_eq!(
+            o2_tree.window_state(w.0),
+            Some(crate::layout::WindowState::Floating)
+        );
+        assert_eq!(o2_tree.window_floating_rect(w.0), Some(float_rect));
+    }
+
+    /// Reassign a fullscreen-over-pseudo-tiled window through the *rebuild*
+    /// path. The fullscreen base state must survive as `PseudoTiled`. (The
+    /// existing `reassign_output_preserves_fullscreen_base_state` only exercises
+    /// the dimension-less `clone` path, so this covers the
+    /// `FullscreenPseudo` branch of `reassign_with_rebuild`.)
+    #[test]
+    fn reassign_with_rebuild_preserves_fullscreen_pseudo_base() {
+        let mut state = WMState::new();
+        let o1 = OutputId(1);
+        let o2 = OutputId(2);
+        for (o, w, h) in [(o1, 1920, 1080), (o2, 1920, 1080)] {
+            let mut out = Output::new(o);
+            out.set_dimensions(w, h);
+            state.outputs.insert(o, out);
+        }
+        state.focused_output = Some(o1);
+
+        let w = WindowId(1);
+        state.windows.insert(w, Window::new(w, o1));
+        let tree = state.tree_for_output(o1).unwrap();
+        tree.insert_window(w.0);
+        let rect = crate::layout::Rect::new(0, 0, 100, 100);
+        tree.toggle_pseudo_tiled(w.0, rect);
+        tree.toggle_fullscreen(w.0);
+
+        state.reassign_output(o1, o2);
+
+        let o2_tree = state.tree_for_output(o2).unwrap();
+        assert!(o2_tree.window_is_fullscreen(w.0));
+        assert_eq!(
+            o2_tree.window_base_state(w.0),
+            Some(crate::layout::WindowState::PseudoTiled)
+        );
+
+        // Un-fullscreening returns to pseudo-tiled.
+        o2_tree.toggle_fullscreen(w.0);
+        assert_eq!(
+            o2_tree.window_state(w.0),
+            Some(crate::layout::WindowState::PseudoTiled)
+        );
+    }
+
+    /// Reassign into a dimension-less (recreated) output while a window is
+    /// floating. The floating rect must be translated by the output position
+    /// delta `(dx, dy)` so the window stays under the cursor / in place on the
+    /// new output. This covers the floating-translation branch of
+    /// `reassign_clone_topology`.
+    #[test]
+    fn reassign_into_dimensionless_output_translates_floating_rects() {
+        let mut state = WMState::new();
+        let o1 = OutputId(1);
+        let o2 = OutputId(2);
+
+        // Source at the origin with a real floating window.
+        let mut out1 = Output::new(o1);
+        out1.set_dimensions(1920, 1080);
+        out1.set_position(0, 0);
+        state.outputs.insert(o1, out1);
+
+        let floating = WindowId(1);
+        state.windows.insert(floating, Window::new(floating, o1));
+        let tree = state.tree_for_output(o1).unwrap();
+        tree.insert_window(floating.0);
+        let src_rect = crate::layout::Rect::new(100, 50, 400, 300);
+        tree.toggle_floating(floating.0, src_rect);
+        state.push_focus(floating);
+
+        // Recreate o2 at a different position, geometry not yet known.
+        let mut out2 = Output::new(o2);
+        out2.set_position(1920, 0);
+        state.outputs.insert(o2, out2);
+
+        state.reassign_output(o1, o2);
+
+        // Give the recreated output real geometry and arrange.
+        let o2_rect = crate::layout::Rect::new(1920, 0, 1920, 1080);
+        state.tree_for_output(o2).unwrap().set_output_rect(o2_rect);
+
+        // Floating rect must be shifted by (dx=1920, dy=0).
+        let dst_rect = state
+            .tree_for_output(o2)
+            .unwrap()
+            .window_floating_rect(floating.0)
+            .unwrap();
+        assert_eq!(dst_rect, crate::layout::Rect::new(100 + 1920, 50, 400, 300));
+    }
+
+    /// Closing the *globally focused* window when its output empties must fall
+    /// back to another output's window (via the global focus stack), not lose
+    /// focus or yank it elsewhere spuriously. This is the multi-output
+    /// reconciliation branch `was_globally_focused && next == Some(window on o2)`.
+    #[test]
+    fn closing_focused_window_when_output_empties_falls_back_to_other_output() {
+        let mut state = WMState::new();
+        let o1 = OutputId(1);
+        let o2 = OutputId(2);
+        for (o, x) in [(o1, 0), (o2, 1920)] {
+            let mut out = Output::new(o);
+            out.set_dimensions(1920, 1080);
+            out.set_position(x, 0);
+            state.outputs.insert(o, out);
+        }
+        state.focused_output = Some(o1);
+
+        // Only window on o1, and globally focused.
+        let a = WindowId(1);
+        state.windows.insert(a, Window::new(a, o1));
+        state.tree_for_output(o1).unwrap().insert_window(a.0);
+        state.push_focus(a);
+
+        // Two windows on o2; C is the last focused there (remembered fallback).
+        let b = WindowId(2);
+        let c = WindowId(3);
+        for w in [b, c] {
+            state.windows.insert(w, Window::new(w, o2));
+            state.tree_for_output(o2).unwrap().insert_window(w.0);
+            state.push_focus(w);
+        }
+
+        // Re-assert global focus on A (o1) while keeping B/C on the stack so the
+        // fallback after closing A lands on C (the surviving output's focus).
+        state.focus_window_id(a);
+        assert_eq!(state.focused_window, Some(a));
+        assert_eq!(state.focused_output, Some(o1));
+
+        // Close the only window on o1 -> o1 now empty.
+        state.close_window_focus_reconcile(a);
+
+        // Focus must fall back to C on o2 (the global focus stack top).
+        assert_eq!(
+            state.focused_window,
+            Some(c),
+            "focus lost when the focused output emptied"
+        );
+        assert_eq!(
+            state.focused_output,
+            Some(o2),
+            "focus did not move to the surviving output"
+        );
+        assert!(state.windows.contains_key(&c), "sibling lost on fallback");
+        assert!(state.windows.contains_key(&b), "sibling lost on fallback");
+        assert!(
+            !state.windows.contains_key(&a),
+            "closed window still present"
+        );
+    }
+
+    /// Closing the very last window in the WM must clear global focus and
+    /// pending focus cleanly (no dangling reference, no panic). This covers the
+    /// `was_globally_focused && next == None` fallback branch.
+    #[test]
+    fn closing_last_remaining_window_clears_focus() {
+        let mut state = WMState::new();
+        let o1 = OutputId(1);
+        let mut out = Output::new(o1);
+        out.set_dimensions(1920, 1080);
+        state.outputs.insert(o1, out);
+        state.focused_output = Some(o1);
+
+        let a = WindowId(1);
+        state.windows.insert(a, Window::new(a, o1));
+        state.tree_for_output(o1).unwrap().insert_window(a.0);
+        state.focus_window_id(a);
+        assert_eq!(state.focused_window, Some(a));
+
+        state.close_window_focus_reconcile(a);
+
+        assert_eq!(
+            state.focused_window, None,
+            "focus should clear when the last window is closed"
+        );
+        assert_eq!(state.pending_focus, None, "pending focus should clear");
+        assert!(!state.windows.contains_key(&a));
+    }
 }
