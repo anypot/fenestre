@@ -78,4 +78,8 @@ pub(crate) enum Event {
         x: i32,
         y: i32,
     },
+    SeatLayerShellFocus {
+        seat_id: SeatId,
+        mode: super::seat::LayerShellFocus,
+    },
 }

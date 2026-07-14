@@ -39,6 +39,7 @@ pub(super) type SceneSnapshot = Vec<SceneEntry>;
 pub(crate) struct WMState {
     pub(super) wm: Option<crate::protocol::river::river_window_management_v1::client::river_window_manager_v1::RiverWindowManagerV1>,
     pub(super) xkb_bindings: Option<crate::protocol::river::river_xkb_bindings_v1::client::river_xkb_bindings_v1::RiverXkbBindingsV1>,
+    pub(super) layer_shell: Option<crate::protocol::river::river_layer_shell_v1::client::river_layer_shell_v1::RiverLayerShellV1>,
     pub(super) config: Option<Config>,
     pub(super) config_path: Option<PathBuf>,
 
@@ -71,6 +72,9 @@ pub(crate) struct WMState {
     /// Snapshot of the last desired scene from a manage cycle, used to diff
     /// manage-phase effects (dimensions, fullscreen, server-side decorations).
     pub(super) last_manage_scene: SceneSnapshot,
+    /// Output last announced as the layer-shell default via `set_default`, used
+    /// to emit that effect only on change (it is global across outputs).
+    pub(super) last_layer_shell_default: Option<OutputId>,
     /// Snapshot of the last desired scene from a render cycle, used to diff
     /// render-phase effects (position, z-order, borders).
     pub(super) last_render_scene: SceneSnapshot,
@@ -100,6 +104,7 @@ impl WMState {
         let mut state = Self {
             wm: None,
             xkb_bindings: None,
+            layer_shell: None,
             config: None,
             config_path: None,
 
@@ -127,6 +132,7 @@ impl WMState {
             next_xkb_binding_id: XkbBindingId(0),
             render_order_cache: Vec::new(),
             last_manage_scene: Vec::new(),
+            last_layer_shell_default: None,
             last_render_scene: Vec::new(),
             windows_by_proxy: HashMap::new(),
             outputs_by_proxy: HashMap::new(),
@@ -213,7 +219,7 @@ impl WMState {
         let rect = self
             .outputs
             .get(&output_id)
-            .and_then(|o| o.rect())
+            .and_then(|o| o.tiling_rect())
             .unwrap_or(Rect::new(0, 0, 0, 0));
         let mut tree = LayoutTree::new(rect);
         if let Some(cfg) = self.config.as_ref() {
@@ -372,7 +378,7 @@ impl WMState {
         let to_rect = self
             .outputs
             .get(&to)
-            .and_then(|o| o.rect())
+            .and_then(|o| o.tiling_rect())
             .unwrap_or(Rect::new(0, 0, 0, 0));
         let from_pos = self
             .outputs
@@ -663,7 +669,7 @@ impl WMState {
             let Some(output) = self.outputs.get(output_id) else {
                 continue;
             };
-            if let Some(rect) = output.rect() {
+            if let Some(rect) = output.tiling_rect() {
                 tree.set_output_rect(rect);
             }
             for (window_id, window_rect, _state) in tree.arranged_windows() {
@@ -777,6 +783,26 @@ impl WMState {
             if self.windows.contains_key(&window_id) {
                 effects.push(Effect::Close { window_id });
             }
+        }
+
+        // Keep the layer-shell default output synced to the focused output so
+        // un-targeted layer surfaces (e.g. launchers) appear on the active
+        // display. `set_default` overrides any previous call on any output and
+        // may only be issued during a manage sequence. Emit only on change, and
+        // only once the output's layer-shell proxy exists; otherwise stay dirty
+        // so a later manage (after the proxy is created) retries.
+        if let Some(default_output) = self.focused_output
+            && self.last_layer_shell_default != Some(default_output)
+            && self.layer_shell.is_some()
+            && self
+                .outputs
+                .get(&default_output)
+                .is_some_and(|o| o.river_layer_shell_output.is_some())
+        {
+            effects.push(Effect::SetLayerShellDefault {
+                output_id: default_output,
+            });
+            self.last_layer_shell_default = Some(default_output);
         }
 
         self.last_manage_scene = desired;
@@ -1233,6 +1259,22 @@ impl WMState {
                 if let Some((_, seat)) = self.find_seat_mut_by_id(seat_id) {
                     seat.pointer_position = Some((x, y));
                 }
+            }
+            Event::SeatLayerShellFocus { seat_id, mode } => {
+                if let Some((_, seat)) = self.find_seat_mut_by_id(seat_id) {
+                    seat.layer_shell_focus = mode;
+                }
+                // `focus_none` means River hands focus back to the WM, so re-run
+                // manage. The adapter drops `FocusWindow` effects while focus is
+                // `Exclusive` and `apply_manage` clears `pending_focus` before they
+                // are emitted, so re-queue the current focus here so it is actually
+                // re-applied instead of staying desynced from River.
+                if mode == super::seat::LayerShellFocus::None
+                    && let Some(window_id) = self.focused_window
+                {
+                    self.pending_focus = Some(window_id);
+                }
+                self.request_manage_dirty();
             }
         }
     }
