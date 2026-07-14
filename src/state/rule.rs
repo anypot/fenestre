@@ -86,9 +86,7 @@ impl WindowRules {
         let app_id = window.app_id.as_deref();
         let title = window.title.as_deref();
 
-        let before_state = tree.window_state(window.id.0);
-        let before_base_state = tree.window_base_state(window.id.0);
-        let before_rect = tree.window_floating_rect(window.id.0);
+        let before_state = tree.window_state(window.id.0).cloned();
 
         let mut applied = false;
         for rule in &self.rules {
@@ -102,16 +100,13 @@ impl WindowRules {
             let rect = rule
                 .floating_rect
                 .unwrap_or_else(|| window.pseudo_tiled_rect(fallback_rect, ratio));
-            tree.set_window_state(window.id.0, rule.target, rect);
+            let target = match rule.target.clone() {
+                WindowState::Floating { .. } => WindowState::Floating { rect },
+                WindowState::PseudoTiled { .. } => WindowState::PseudoTiled { rect },
+                other => other,
+            };
+            tree.set_window_state(window.id.0, target);
             applied = true;
-        }
-
-        // Rules set the active state but must not overwrite the home state that
-        // toggle commands rely on. Restore the pre-rule base_state (defaulting
-        // to Tiled when the window has no recorded base state yet).
-        if applied {
-            let base = before_base_state.unwrap_or(crate::layout::WindowState::Tiled);
-            let _ = tree.set_window_base_state(window.id.0, base);
         }
 
         // Finalize once no rule still awaits metadata, so a later metadata
@@ -127,9 +122,23 @@ impl WindowRules {
             return false;
         }
 
-        let after_state = tree.window_state(window.id.0);
-        let after_rect = tree.window_floating_rect(window.id.0);
-        after_state != before_state || after_rect != before_rect
+        // Preserve the pre-rule state in Fullscreen's restore field so toggling
+        // fullscreen off returns to the window's original state, not hardcoded Tiled.
+        if let Some(mut state) = tree.window_state(window.id.0).cloned()
+            && let WindowState::Fullscreen { ref mut restore } = state
+        {
+            // Only overwrite `restore` when the pre-rule state was not itself
+            // fullscreen, so we never nest a `Fullscreen` inside `restore`
+            // (which would require two toggles to actually exit).
+            if !matches!(before_state, Some(WindowState::Fullscreen { .. })) {
+                let restore_state = before_state.clone().unwrap_or(WindowState::Tiled);
+                **restore = restore_state;
+            }
+            tree.set_window_state(window.id.0, state);
+        }
+
+        let after_state = tree.window_state(window.id.0).cloned();
+        after_state != before_state
     }
 }
 
@@ -187,7 +196,9 @@ mod tests {
         let rule = test_rule(
             Some(RulePattern::exact("foot")),
             None,
-            WindowState::Floating,
+            WindowState::Floating {
+                rect: Rect::new(0, 0, 0, 0),
+            },
         );
         assert!(rule.matches("foot", "anything"));
         assert!(!rule.matches("football", "anything"));
@@ -199,7 +210,9 @@ mod tests {
         let rule = test_rule(
             Some(RulePattern::prefix("mate-")),
             None,
-            WindowState::Floating,
+            WindowState::Floating {
+                rect: Rect::new(0, 0, 0, 0),
+            },
         );
         assert!(rule.matches("mate-calc", "anything"));
         assert!(rule.matches("mate-dictionary", "anything"));
@@ -213,7 +226,9 @@ mod tests {
         let rule = test_rule(
             Some(RulePattern::regex("foot").unwrap()),
             None,
-            WindowState::Floating,
+            WindowState::Floating {
+                rect: Rect::new(0, 0, 0, 0),
+            },
         );
         assert!(rule.matches("foot", "anything"));
         assert!(rule.matches("football", "anything"));
@@ -236,7 +251,9 @@ mod tests {
         let rule = test_rule(
             Some(RulePattern::exact("foot")),
             None,
-            WindowState::Floating,
+            WindowState::Floating {
+                rect: Rect::new(0, 0, 0, 0),
+            },
         );
         assert!(rule.requires_app_id());
         assert!(!rule.requires_title());
@@ -244,7 +261,9 @@ mod tests {
         let title_rule = test_rule(
             None,
             Some(RulePattern::exact("news")),
-            WindowState::Floating,
+            WindowState::Floating {
+                rect: Rect::new(0, 0, 0, 0),
+            },
         );
         assert!(!title_rule.requires_app_id());
         assert!(title_rule.requires_title());
@@ -266,7 +285,9 @@ mod tests {
         let rules = WindowRules::new(vec![test_rule(
             Some(RulePattern::exact("foot")),
             None,
-            WindowState::Floating,
+            WindowState::Floating {
+                rect: Rect::new(0, 0, 0, 0),
+            },
         )]);
         assert!(!rules.evaluate(&mut window, &mut tree, Rect::new(0, 0, 1920, 1080), 0.5));
     }
@@ -294,14 +315,20 @@ mod tests {
             test_rule(
                 Some(RulePattern::regex("firefox").unwrap()),
                 Some(RulePattern::exact("Library")),
-                WindowState::Floating,
+                WindowState::Floating {
+                    rect: Rect::new(0, 0, 0, 0),
+                },
             ),
         ]);
 
         assert!(rules.evaluate(&mut window, &mut tree, Rect::new(0, 0, 1920, 1080), 0.5));
         assert!(window.rules_applied);
-        assert_eq!(tree.window_base_state(1), Some(WindowState::Tiled));
-        assert_eq!(tree.window_state(1), Some(WindowState::Floating));
+        assert_eq!(
+            tree.window_state(1).cloned(),
+            Some(WindowState::Floating {
+                rect: Rect::new(480, 270, 960, 540)
+            })
+        );
     }
 
     #[test]
@@ -324,20 +351,28 @@ mod tests {
             test_rule(
                 Some(RulePattern::regex("firefox").unwrap()),
                 Some(RulePattern::exact("Library")),
-                WindowState::Floating,
+                WindowState::Floating {
+                    rect: Rect::new(0, 0, 0, 0),
+                },
             ),
         ]);
 
         // app_id known, title missing: general rule applies, not finalized yet.
-        assert!(rules.evaluate(&mut window, &mut tree, Rect::new(0, 0, 1920, 1080), 0.5));
+        // The window starts as Tiled and the general rule sets Tiled, so the
+        // state does not change and evaluate returns false.
+        assert!(!rules.evaluate(&mut window, &mut tree, Rect::new(0, 0, 1920, 1080), 0.5));
         assert!(!window.rules_applied);
-        assert_eq!(tree.window_base_state(1), Some(WindowState::Tiled));
+        assert_eq!(tree.window_state(1).cloned(), Some(WindowState::Tiled));
 
         // Title arrives: re-evaluation lets the later, specific rule override.
         window.title = Some("Library".to_string());
         assert!(rules.evaluate(&mut window, &mut tree, Rect::new(0, 0, 1920, 1080), 0.5));
         assert!(window.rules_applied);
-        assert_eq!(tree.window_base_state(1), Some(WindowState::Tiled));
-        assert_eq!(tree.window_state(1), Some(WindowState::Floating));
+        assert_eq!(
+            tree.window_state(1).cloned(),
+            Some(WindowState::Floating {
+                rect: Rect::new(480, 270, 960, 540)
+            })
+        );
     }
 }

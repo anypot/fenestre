@@ -16,17 +16,17 @@ pub(crate) enum FocusDirection {
     Down,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WindowState {
     Tiled,
-    Floating,
-    PseudoTiled,
-    Fullscreen,
+    Floating { rect: Rect },
+    PseudoTiled { rect: Rect },
+    Fullscreen { restore: Box<WindowState> },
 }
 
 impl WindowState {
-    fn participates_in_tiling(self) -> bool {
-        matches!(self, Self::Tiled | Self::PseudoTiled)
+    fn participates_in_tiling(&self) -> bool {
+        matches!(self, Self::Tiled | Self::PseudoTiled { .. })
     }
 }
 
@@ -48,9 +48,7 @@ struct LayoutSplit {
 struct LayoutNode {
     window: Option<u32>,
     state: WindowState,
-    base_state: WindowState,
     rect: Rect,
-    floating_rect: Rect,
     has_tiling: bool,
     split: Option<LayoutSplit>,
     children: Option<(Box<LayoutNode>, Box<LayoutNode>)>,
@@ -136,9 +134,7 @@ impl LayoutNode {
         Self {
             window,
             state: WindowState::Tiled,
-            base_state: WindowState::Tiled,
             rect: Rect::new(0, 0, 0, 0),
-            floating_rect: Rect::new(0, 0, 0, 0),
             has_tiling: window.is_some(),
             split: None,
             children: None,
@@ -155,9 +151,7 @@ impl LayoutNode {
         Self {
             window: None,
             state: WindowState::Tiled,
-            base_state: WindowState::Tiled,
             rect: Rect::new(0, 0, 0, 0),
-            floating_rect: Rect::new(0, 0, 0, 0),
             has_tiling,
             split: Some(split),
             children: Some((first_child, second_child)),
@@ -208,15 +202,18 @@ impl LayoutTree {
         self.arrange();
     }
 
-    /// Translate every node's floating rect by `(dx, dy)`. Used when reassigning
+    /// Translate every floating window's rect by `(dx, dy)`. Used when reassigning
     /// windows between outputs at different logical positions so floating windows
-    /// keep their relative placement. No output clamping is applied: reassignment
-    /// may run before the destination has real dimensions, and the next
-    /// `set_output_rect`/arrange re-clamps anyway.
+    /// keep their relative placement. Pseudo-tiled geometry is positionally
+    /// derived from the output in `reassign_output`, so it is not translated here.
+    /// No output clamping is applied: reassignment may run before the destination
+    /// has real dimensions, and the next `set_output_rect`/arrange re-clamps anyway.
     pub(crate) fn translate_floating_rects(&mut self, dx: i32, dy: i32) {
         fn shift(node: &mut LayoutNode, dx: i32, dy: i32) {
-            node.floating_rect.x = node.floating_rect.x.saturating_add(dx);
-            node.floating_rect.y = node.floating_rect.y.saturating_add(dy);
+            if let WindowState::Floating { rect } = &mut node.state {
+                rect.x = rect.x.saturating_add(dx);
+                rect.y = rect.y.saturating_add(dy);
+            }
             if let Some((first, second)) = node.children.as_mut() {
                 shift(first, dx, dy);
                 shift(second, dx, dy);
@@ -424,8 +421,8 @@ impl LayoutTree {
     /// in the given direction.
     ///
     /// The tiled positions themselves are not moved; instead the *window IDs*
-    /// and their per-node state (`state`, `base_state`, `floating_rect`,
-    /// `has_tiling`) are exchanged between the two leaf nodes.
+    /// and their per-node state (`state`, `has_tiling`) are exchanged between
+    /// the two leaf nodes.
     /// `arrange()` is called up front to compute a baseline layout.
     /// The actual window-to-rect association is finalized by `arrange()`
     /// on the next frame, after this function returns and the caller
@@ -513,8 +510,6 @@ impl LayoutTree {
             unsafe {
                 std::mem::swap(&mut (*a).window, &mut (*b).window);
                 std::mem::swap(&mut (*a).state, &mut (*b).state);
-                std::mem::swap(&mut (*a).base_state, &mut (*b).base_state);
-                std::mem::swap(&mut (*a).floating_rect, &mut (*b).floating_rect);
                 std::mem::swap(&mut (*a).has_tiling, &mut (*b).has_tiling);
             }
             if let Some(root) = self.root.as_mut() {
@@ -528,43 +523,20 @@ impl LayoutTree {
 
     pub(crate) fn window_is_floating(&self, id: u32) -> bool {
         self.find_window_node(id)
-            .map(|n| n.state == WindowState::Floating)
+            .map(|n| matches!(n.state, WindowState::Floating { .. }))
             .unwrap_or(false)
     }
 
     pub(crate) fn window_is_fullscreen(&self, id: u32) -> bool {
         self.find_window_node(id)
-            .map(|n| n.state == WindowState::Fullscreen)
+            .map(|n| matches!(n.state, WindowState::Fullscreen { .. }))
             .unwrap_or(false)
-    }
-
-    /// Return the node's `base_state` for a window, or `None` if the window is
-    /// not in the tree.
-    pub(crate) fn window_base_state(&self, id: u32) -> Option<WindowState> {
-        self.find_window_node(id).map(|n| n.base_state)
     }
 
     /// Return the node's current `state` for a window, or `None` if the window
     /// is not in the tree.
-    pub(crate) fn window_state(&self, id: u32) -> Option<WindowState> {
-        self.find_window_node(id).map(|n| n.state)
-    }
-
-    /// Set only the node's `base_state`, leaving `state` and `floating_rect`
-    /// unchanged. Used by rule evaluation to set the toggle target without
-    /// overwriting the home state.
-    pub(crate) fn set_window_base_state(&mut self, id: u32, base_state: WindowState) -> bool {
-        let Some(node) = self.find_window_node_mut(id) else {
-            return false;
-        };
-        node.base_state = base_state;
-        true
-    }
-
-    /// Return the node's `floating_rect` for a window, or `None` if the window
-    /// is not in the tree.
-    pub(crate) fn window_floating_rect(&self, id: u32) -> Option<Rect> {
-        self.find_window_node(id).map(|n| n.floating_rect)
+    pub(crate) fn window_state(&self, id: u32) -> Option<&WindowState> {
+        self.find_window_node(id).map(|n| &n.state)
     }
 
     pub(crate) fn move_floating_window(
@@ -584,6 +556,10 @@ impl LayoutTree {
             return false;
         };
 
+        let WindowState::Floating { rect } = &mut node.state else {
+            return false;
+        };
+
         let dx = match direction {
             FocusDirection::Left => -delta_x,
             FocusDirection::Right => delta_x,
@@ -595,19 +571,19 @@ impl LayoutTree {
             _ => 0,
         };
 
-        node.floating_rect.x += dx;
-        node.floating_rect.y += dy;
+        rect.x += dx;
+        rect.y += dy;
 
         let min_x = output_x;
-        let max_x = output_x + output_width - node.floating_rect.width;
+        let max_x = output_x + output_width - rect.width;
         let min_y = output_y;
-        let max_y = output_y + output_height - node.floating_rect.height;
+        let max_y = output_y + output_height - rect.height;
 
         if min_x <= max_x {
-            node.floating_rect.x = node.floating_rect.x.clamp(min_x, max_x);
+            rect.x = rect.x.clamp(min_x, max_x);
         }
         if min_y <= max_y {
-            node.floating_rect.y = node.floating_rect.y.clamp(min_y, max_y);
+            rect.y = rect.y.clamp(min_y, max_y);
         }
 
         true
@@ -732,9 +708,9 @@ impl LayoutTree {
             return false;
         };
 
-        if node.state != WindowState::Floating {
+        let WindowState::Floating { rect } = &mut node.state else {
             return false;
-        }
+        };
 
         let raw_x = (output_width as f32 * delta_percent / 100.0).round();
         let raw_y = (output_height as f32 * delta_percent / 100.0).round();
@@ -744,34 +720,34 @@ impl LayoutTree {
         match direction {
             FocusDirection::Left => {
                 if is_expand {
-                    node.floating_rect.x -= delta_x;
-                    node.floating_rect.width += delta_x;
+                    rect.x -= delta_x;
+                    rect.width += delta_x;
                 } else {
-                    node.floating_rect.x += delta_x;
-                    node.floating_rect.width = (node.floating_rect.width - delta_x).max(1);
+                    rect.x += delta_x;
+                    rect.width = (rect.width - delta_x).max(1);
                 }
             }
             FocusDirection::Right => {
                 if is_expand {
-                    node.floating_rect.width += delta_x;
+                    rect.width += delta_x;
                 } else {
-                    node.floating_rect.width = (node.floating_rect.width - delta_x).max(1);
+                    rect.width = (rect.width - delta_x).max(1);
                 }
             }
             FocusDirection::Up => {
                 if is_expand {
-                    node.floating_rect.y -= delta_y;
-                    node.floating_rect.height += delta_y;
+                    rect.y -= delta_y;
+                    rect.height += delta_y;
                 } else {
-                    node.floating_rect.y += delta_y;
-                    node.floating_rect.height = (node.floating_rect.height - delta_y).max(1);
+                    rect.y += delta_y;
+                    rect.height = (rect.height - delta_y).max(1);
                 }
             }
             FocusDirection::Down => {
                 if is_expand {
-                    node.floating_rect.height += delta_y;
+                    rect.height += delta_y;
                 } else {
-                    node.floating_rect.height = (node.floating_rect.height - delta_y).max(1);
+                    rect.height = (rect.height - delta_y).max(1);
                 }
             }
         }
@@ -805,18 +781,19 @@ impl LayoutTree {
         self.root.as_deref_mut().and_then(|root| find(root, target))
     }
 
-    /// Toggle fullscreen state for a window, preserving its previous state in base_state.
+    /// Toggle fullscreen state for a window, preserving its previous state in `restore`.
     pub(crate) fn toggle_fullscreen(&mut self, id: u32) -> bool {
         let Some(node) = self.find_window_node_mut(id) else {
             return false;
         };
 
-        if node.state == WindowState::Fullscreen {
-            node.state = node.base_state;
-        } else {
-            node.base_state = node.state;
-            node.state = WindowState::Fullscreen;
-        }
+        let old = std::mem::replace(&mut node.state, WindowState::Tiled);
+        node.state = match old {
+            WindowState::Fullscreen { restore } => *restore,
+            other => WindowState::Fullscreen {
+                restore: Box::new(other),
+            },
+        };
 
         node.has_tiling = node.state.participates_in_tiling();
 
@@ -828,38 +805,39 @@ impl LayoutTree {
 
     /// Toggle floating state for a window with the given rect.
     pub(crate) fn toggle_floating(&mut self, id: u32, rect: Rect) -> bool {
-        self.toggle_state(id, WindowState::Floating, rect)
+        self.toggle_state(id, WindowState::Floating { rect })
     }
 
     /// Toggle pseudo-tiled state for a window with the given rect.
     pub(crate) fn toggle_pseudo_tiled(&mut self, id: u32, rect: Rect) -> bool {
-        self.toggle_state(id, WindowState::PseudoTiled, rect)
+        self.toggle_state(id, WindowState::PseudoTiled { rect })
     }
 
-    /// Handle state toggle (floating/pseudo-tiled) for a window.
-    /// Preserves base_state when transitioning to/from fullscreen.
-    fn toggle_state(&mut self, id: u32, target: WindowState, rect: Rect) -> bool {
+    /// Handle state toggle for a window.
+    fn toggle_state(&mut self, id: u32, target: WindowState) -> bool {
         let Some(node) = self.find_window_node_mut(id) else {
             return false;
         };
 
-        match node.state {
-            WindowState::Fullscreen => {
-                node.base_state = target;
-                node.state = target;
-                node.floating_rect = rect;
+        let old = std::mem::replace(&mut node.state, WindowState::Tiled);
+        node.state = match old {
+            WindowState::Fullscreen { restore: _ } => target,
+            WindowState::Floating { .. } => {
+                if matches!(target, WindowState::Floating { .. }) {
+                    WindowState::Tiled
+                } else {
+                    target
+                }
             }
-            s if s == target => {
-                let restored = node.base_state;
-                node.base_state = WindowState::Tiled;
-                node.state = restored;
+            WindowState::PseudoTiled { .. } => {
+                if matches!(target, WindowState::PseudoTiled { .. }) {
+                    WindowState::Tiled
+                } else {
+                    target
+                }
             }
-            _ => {
-                node.base_state = node.state;
-                node.state = target;
-                node.floating_rect = rect;
-            }
-        }
+            _ => target,
+        };
 
         node.has_tiling = node.state.participates_in_tiling();
 
@@ -870,14 +848,12 @@ impl LayoutTree {
     }
 
     /// Explicitly set a window to a given state (no toggle behavior).
-    pub(crate) fn set_window_state(&mut self, id: u32, target: WindowState, rect: Rect) -> bool {
+    pub(crate) fn set_window_state(&mut self, id: u32, target: WindowState) -> bool {
         let Some(node) = self.find_window_node_mut(id) else {
             return false;
         };
 
-        node.base_state = target;
         node.state = target;
-        node.floating_rect = rect;
 
         node.has_tiling = node.state.participates_in_tiling();
 
@@ -979,10 +955,8 @@ impl LayoutTree {
             if node.window == Some(id) {
                 return Some(Box::new(LayoutNode {
                     window: node.window,
-                    state: node.state,
-                    base_state: node.base_state,
+                    state: node.state.clone(),
                     rect: node.rect,
-                    floating_rect: node.floating_rect,
                     has_tiling: node.has_tiling,
                     split: node.split.clone(),
                     children: node.children.take(),
@@ -1114,14 +1088,16 @@ impl FocusSide for Rect {
 /// Apply layout rectangles to all nodes in the tree, respecting tiling state.
 /// Non-tiling windows (floating, fullscreen) receive zero-sized rectangles to not affect siblings.
 fn apply_rects(node: &mut LayoutNode, rect: Rect, gap: i32) {
-    node.rect = rect;
-
     let Some((split, children)) = node.split.clone().zip(node.children.as_mut()) else {
-        if node.state == WindowState::Floating {
-            node.rect = node.floating_rect;
+        if let WindowState::Floating { rect: float_rect } = &node.state {
+            node.rect = *float_rect;
+        } else {
+            node.rect = rect;
         }
         return;
     };
+
+    node.rect = rect;
 
     let (first_rect, second_rect) = match (children.0.has_tiling, children.1.has_tiling) {
         (true, true) => split_rect(rect, split.direction, split.ratio, gap),
@@ -1201,11 +1177,11 @@ fn split_rect(rect: Rect, direction: SplitDirection, ratio: f64, gap: i32) -> (R
 }
 
 /// Convert window state to its actual rendering rectangle.
-fn rect_for_state(state: WindowState, rect: Rect, floating_rect: Rect, output_rect: Rect) -> Rect {
+fn rect_for_state(state: &WindowState, rect: Rect, output_rect: Rect) -> Rect {
     match state {
-        WindowState::Fullscreen => output_rect,
-        WindowState::Floating => floating_rect,
-        WindowState::PseudoTiled => capped_rect(rect, floating_rect),
+        WindowState::Fullscreen { .. } => output_rect,
+        WindowState::Floating { rect: float_rect } => *float_rect,
+        WindowState::PseudoTiled { rect: pseudo_rect } => capped_rect(rect, *pseudo_rect),
         WindowState::Tiled => rect,
     }
 }
@@ -1213,7 +1189,7 @@ fn rect_for_state(state: WindowState, rect: Rect, floating_rect: Rect, output_re
 /// Collect window IDs with their rectangles for visible nodes traversal.
 fn collect_rects(node: &LayoutNode, output_rect: Rect, rects: &mut Vec<(u32, Rect)>) {
     if let Some(window) = node.window {
-        let rect = rect_for_state(node.state, node.rect, node.floating_rect, output_rect);
+        let rect = rect_for_state(&node.state, node.rect, output_rect);
         rects.push((window, rect));
     }
     if let Some((first, second)) = node.children.as_ref() {
@@ -1228,8 +1204,8 @@ fn collect_windows_with_state(
     windows: &mut Vec<(u32, Rect, WindowState)>,
 ) {
     if let Some(window) = node.window {
-        let rect = rect_for_state(node.state, node.rect, node.floating_rect, output_rect);
-        windows.push((window, rect, node.state));
+        let rect = rect_for_state(&node.state, node.rect, output_rect);
+        windows.push((window, rect, node.state.clone()));
     }
     if let Some((first, second)) = node.children.as_ref() {
         collect_windows_with_state(first, output_rect, windows);
@@ -1979,7 +1955,10 @@ mod tests {
         assert!(layout.move_floating_window(2, FocusDirection::Down, delta_x, delta_y));
 
         let node = layout.find_window_node(2).unwrap();
-        assert_eq!(node.floating_rect, Rect::new(110, 110, 200, 50));
+        let WindowState::Floating { rect } = &node.state else {
+            panic!("expected floating");
+        };
+        assert_eq!(*rect, Rect::new(110, 110, 200, 50));
     }
 
     #[test]
@@ -2137,16 +2116,11 @@ mod tests {
         assert!(layout.resize_floating_window(2, FocusDirection::Down, 5.0, true));
 
         let node = layout.find_window_node(2).unwrap();
-        assert!(
-            node.floating_rect.width > 200,
-            "width={}",
-            node.floating_rect.width
-        );
-        assert!(
-            node.floating_rect.height > 50,
-            "height={}",
-            node.floating_rect.height
-        );
+        let WindowState::Floating { rect } = &node.state else {
+            panic!("expected floating");
+        };
+        assert!(rect.width > 200, "width={}", rect.width);
+        assert!(rect.height > 50, "height={}", rect.height);
     }
 
     #[test]
@@ -2157,11 +2131,17 @@ mod tests {
         layout.arrange();
 
         assert!(layout.toggle_floating(2, Rect::new(100, 100, 200, 50)));
-        let before = layout.find_window_node(2).unwrap().floating_rect;
+        let WindowState::Floating { rect: before } = layout.find_window_node(2).unwrap().state
+        else {
+            panic!("expected floating");
+        };
 
         assert!(layout.resize_floating_window(2, FocusDirection::Left, 10.0, false)); // shrink
 
-        let after = layout.find_window_node(2).unwrap().floating_rect;
+        let WindowState::Floating { rect: after } = layout.find_window_node(2).unwrap().state
+        else {
+            panic!("expected floating");
+        };
         assert!(
             after.width < before.width,
             "width should shrink: {} -> {}",
@@ -2184,11 +2164,17 @@ mod tests {
         layout.arrange();
 
         assert!(layout.toggle_floating(2, Rect::new(100, 100, 200, 50)));
-        let before = layout.find_window_node(2).unwrap().floating_rect;
+        let WindowState::Floating { rect: before } = layout.find_window_node(2).unwrap().state
+        else {
+            panic!("expected floating");
+        };
 
         assert!(layout.resize_floating_window(2, FocusDirection::Up, 10.0, false)); // shrink
 
-        let after = layout.find_window_node(2).unwrap().floating_rect;
+        let WindowState::Floating { rect: after } = layout.find_window_node(2).unwrap().state
+        else {
+            panic!("expected floating");
+        };
         assert!(
             after.height < before.height,
             "height should shrink: {} -> {}",
@@ -2211,11 +2197,17 @@ mod tests {
         layout.arrange();
 
         assert!(layout.toggle_floating(2, Rect::new(200, 100, 200, 50)));
-        let before = layout.find_window_node(2).unwrap().floating_rect;
+        let WindowState::Floating { rect: before } = layout.find_window_node(2).unwrap().state
+        else {
+            panic!("expected floating");
+        };
 
         assert!(layout.resize_floating_window(2, FocusDirection::Left, 10.0, true)); // expand
 
-        let after = layout.find_window_node(2).unwrap().floating_rect;
+        let WindowState::Floating { rect: after } = layout.find_window_node(2).unwrap().state
+        else {
+            panic!("expected floating");
+        };
         assert!(
             after.width > before.width,
             "width should expand: {} -> {}",
@@ -2238,11 +2230,17 @@ mod tests {
         layout.arrange();
 
         assert!(layout.toggle_floating(2, Rect::new(100, 200, 200, 50)));
-        let before = layout.find_window_node(2).unwrap().floating_rect;
+        let WindowState::Floating { rect: before } = layout.find_window_node(2).unwrap().state
+        else {
+            panic!("expected floating");
+        };
 
         assert!(layout.resize_floating_window(2, FocusDirection::Up, 10.0, true)); // expand
 
-        let after = layout.find_window_node(2).unwrap().floating_rect;
+        let WindowState::Floating { rect: after } = layout.find_window_node(2).unwrap().state
+        else {
+            panic!("expected floating");
+        };
         assert!(
             after.height > before.height,
             "height should expand: {} -> {}",

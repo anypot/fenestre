@@ -467,48 +467,38 @@ impl WMState {
         for win_id in window_ids {
             if let Some(window) = self.windows.get(&WindowId(*win_id)) {
                 let pseudo_rect = window.pseudo_tiled_rect(to_rect, float_ratio);
-                // Derive the plan from the authoritative tree state rather than
-                // the window's cached `mode`; float geometry comes from the
-                // node's `floating_rect`.
                 let plan = match from_tree.window_state(*win_id) {
-                    Some(crate::layout::WindowState::Floating) => {
-                        let r = from_tree
-                            .window_floating_rect(*win_id)
-                            .expect("window_floating_rect always returns Some for window in tree");
-                        ReassignPlan::Floating(crate::layout::Rect::new(
-                            r.x.saturating_add(dx),
-                            r.y.saturating_add(dy),
-                            r.width,
-                            r.height,
-                        ))
-                    }
-                    Some(crate::layout::WindowState::PseudoTiled) => {
-                        ReassignPlan::PseudoTiled(pseudo_rect)
-                    }
-                    Some(crate::layout::WindowState::Fullscreen) => {
-                        match from_tree.window_base_state(*win_id) {
-                            Some(crate::layout::WindowState::PseudoTiled) => {
-                                ReassignPlan::FullscreenPseudo(pseudo_rect)
-                            }
-                            Some(crate::layout::WindowState::Floating) => {
-                                ReassignPlan::FullscreenFloating(
-                                    from_tree
-                                        .window_floating_rect(*win_id)
-                                        .map(|r| {
-                                            crate::layout::Rect::new(
-                                                r.x.saturating_add(dx),
-                                                r.y.saturating_add(dy),
-                                                r.width,
-                                                r.height,
-                                            )
-                                        })
-                                        .expect("window_floating_rect always returns Some for window in tree"),
-                                )
-                            }
-                            _ => ReassignPlan::FullscreenTiled,
+                    Some(state) => match state {
+                        crate::layout::WindowState::Floating { rect } => {
+                            ReassignPlan::Floating(crate::layout::Rect::new(
+                                rect.x.saturating_add(dx),
+                                rect.y.saturating_add(dy),
+                                rect.width,
+                                rect.height,
+                            ))
                         }
-                    }
-                    Some(crate::layout::WindowState::Tiled) | None => ReassignPlan::Tiled,
+                        crate::layout::WindowState::PseudoTiled { .. } => {
+                            ReassignPlan::PseudoTiled(pseudo_rect)
+                        }
+                        crate::layout::WindowState::Fullscreen { restore } => {
+                            match restore.as_ref() {
+                                crate::layout::WindowState::PseudoTiled { .. } => {
+                                    ReassignPlan::FullscreenPseudo(pseudo_rect)
+                                }
+                                crate::layout::WindowState::Floating { rect } => {
+                                    ReassignPlan::FullscreenFloating(crate::layout::Rect::new(
+                                        rect.x.saturating_add(dx),
+                                        rect.y.saturating_add(dy),
+                                        rect.width,
+                                        rect.height,
+                                    ))
+                                }
+                                _ => ReassignPlan::FullscreenTiled,
+                            }
+                        }
+                        _ => ReassignPlan::Tiled,
+                    },
+                    None => ReassignPlan::Tiled,
                 };
                 plans.insert(*win_id, plan);
             }
@@ -616,7 +606,7 @@ impl WMState {
             .unwrap_or(((0xff, 0xff, 0xff, 0xff), (0xff, 0xff, 0xff, 0xff)));
 
         for (output_id, tree) in self.output_trees.iter() {
-            if self.outputs.get(output_id).is_none() {
+            if !self.outputs.contains_key(output_id) {
                 continue;
             }
             let arranged = tree.arranged_windows_readonly();
@@ -626,7 +616,7 @@ impl WMState {
                     continue;
                 };
 
-                let mode_priority = mode_priority(state);
+                let mode_priority = mode_priority(&state);
                 let focus_priority = if self.focused_window == Some(window_id) {
                     1
                 } else {
@@ -694,11 +684,8 @@ impl WMState {
 
         for entry in &desired {
             let Some(last) = last_map.get(&entry.window_id) else {
-                // Newly added window: emit the initial manage-phase effects it
-                // would otherwise never receive (the diff below only handles
-                // windows already present in the last manage snapshot).
                 match entry.state {
-                    WindowState::Fullscreen => {
+                    WindowState::Fullscreen { .. } => {
                         effects.push(Effect::Fullscreen {
                             window_id: entry.window_id,
                             output_id: entry.output_id,
@@ -707,7 +694,9 @@ impl WMState {
                     _ => {
                         if matches!(
                             entry.state,
-                            WindowState::Tiled | WindowState::Floating | WindowState::PseudoTiled
+                            WindowState::Tiled
+                                | WindowState::Floating { .. }
+                                | WindowState::PseudoTiled { .. }
                         ) {
                             effects.push(Effect::ProposeDimensions {
                                 window_id: entry.window_id,
@@ -727,14 +716,14 @@ impl WMState {
 
             if last.state != entry.state {
                 match entry.state {
-                    WindowState::Fullscreen => {
+                    WindowState::Fullscreen { .. } => {
                         effects.push(Effect::Fullscreen {
                             window_id: entry.window_id,
                             output_id: entry.output_id,
                         });
                     }
                     _ => {
-                        if last.state == WindowState::Fullscreen {
+                        if matches!(last.state, WindowState::Fullscreen { .. }) {
                             effects.push(Effect::ExitFullscreen {
                                 window_id: entry.window_id,
                             });
@@ -743,17 +732,19 @@ impl WMState {
                 }
             }
 
-            if last.rect != entry.rect {
-                if matches!(
+            if last.rect != entry.rect
+                && matches!(
                     entry.state,
-                    WindowState::Tiled | WindowState::Floating | WindowState::PseudoTiled
-                ) {
-                    effects.push(Effect::ProposeDimensions {
-                        window_id: entry.window_id,
-                        width: entry.rect.width,
-                        height: entry.rect.height,
-                    });
-                }
+                    WindowState::Tiled
+                        | WindowState::Floating { .. }
+                        | WindowState::PseudoTiled { .. }
+                )
+            {
+                effects.push(Effect::ProposeDimensions {
+                    window_id: entry.window_id,
+                    width: entry.rect.width,
+                    height: entry.rect.height,
+                });
             }
 
             // Entering server-side decorations (client → SSD) means River
@@ -843,7 +834,10 @@ impl WMState {
                     x: entry.rect.x,
                     y: entry.rect.y,
                 });
-                if matches!(entry.state, WindowState::Floating | WindowState::Fullscreen) {
+                if matches!(
+                    entry.state,
+                    WindowState::Floating { .. } | WindowState::Fullscreen { .. }
+                ) {
                     effects.push(Effect::PlaceTop {
                         window_id: *window_id,
                     });
@@ -870,26 +864,29 @@ impl WMState {
                 });
             }
 
-            if last.z != entry.z {
-                if matches!(entry.state, WindowState::Floating | WindowState::Fullscreen) {
-                    effects.push(Effect::PlaceTop {
-                        window_id: *window_id,
-                    });
-                }
+            if last.z != entry.z
+                && matches!(
+                    entry.state,
+                    WindowState::Floating { .. } | WindowState::Fullscreen { .. }
+                )
+            {
+                effects.push(Effect::PlaceTop {
+                    window_id: *window_id,
+                });
             }
 
-            if last.border != entry.border {
-                if let Some((width, r, g, b, a)) = entry.border {
-                    effects.push(Effect::SetBorders {
-                        window_id: *window_id,
-                        edges: super::effects::ALL_EDGES,
-                        width,
-                        r,
-                        g,
-                        b,
-                        a,
-                    });
-                }
+            if last.border != entry.border
+                && let Some((width, r, g, b, a)) = entry.border
+            {
+                effects.push(Effect::SetBorders {
+                    window_id: *window_id,
+                    edges: super::effects::ALL_EDGES,
+                    width,
+                    r,
+                    g,
+                    b,
+                    a,
+                });
             }
         }
 
@@ -912,7 +909,7 @@ impl WMState {
     }
 
     /// Resolve the current `WindowState` for a window from its output tree.
-    pub(super) fn window_state_for_id(&self, window_id: WindowId) -> Option<WindowState> {
+    pub(super) fn window_state_for_id(&self, window_id: WindowId) -> Option<&WindowState> {
         let output_id = self.windows.get(&window_id)?.output_id;
         let tree = self.output_trees.get(&output_id)?;
         tree.window_state(window_id.0)
@@ -1235,18 +1232,18 @@ impl WMState {
 /// Tiled / PseudoTiled sit at the bottom (0), floating above (1), and
 /// fullscreen on top (2). Shared by `desired_scene` and
 /// `render_stack_priority` so the priority rules live in exactly one place.
-fn mode_priority(state: WindowState) -> u8 {
+fn mode_priority(state: &WindowState) -> u8 {
     match state {
-        WindowState::Tiled | WindowState::PseudoTiled => 0,
-        WindowState::Floating => 1,
-        WindowState::Fullscreen => 2,
+        WindowState::Tiled | WindowState::PseudoTiled { .. } => 0,
+        WindowState::Floating { .. } => 1,
+        WindowState::Fullscreen { .. } => 2,
     }
 }
 
 /// Compute the render stack priority for a window.
 /// Returns a tuple of (mode_priority, focus_priority, window_id) for deterministic z-ordering.
 fn render_stack_priority(
-    state: Option<WindowState>,
+    state: Option<&WindowState>,
     focused_window: Option<super::window::WindowId>,
     window_id: super::window::WindowId,
 ) -> (u8, u8, u32) {
@@ -1705,11 +1702,11 @@ mod tests {
         state.reassign_output(o1, o2);
 
         let o2_tree = state.tree_for_output(o2).unwrap();
-        // The captured `base_state` must survive as PseudoTiled, not clobber to Tiled.
-        assert_eq!(
-            o2_tree.window_base_state(w1.0),
-            Some(crate::layout::WindowState::PseudoTiled)
-        );
+        let fullscreen_state = o2_tree.window_state(w1.0).unwrap().clone();
+        let crate::layout::WindowState::Fullscreen { restore } = fullscreen_state else {
+            panic!("expected fullscreen");
+        };
+        assert_eq!(*restore, crate::layout::WindowState::PseudoTiled { rect });
         assert!(o2_tree.window_is_fullscreen(w1.0));
 
         // Un-fullscreening should return to PseudoTiled, not Tiled.
@@ -1719,7 +1716,10 @@ mod tests {
             .into_iter()
             .find(|(id, _, _)| *id == w1.0)
             .map(|(_, _, s)| s);
-        assert_eq!(state_after, Some(crate::layout::WindowState::PseudoTiled));
+        assert_eq!(
+            state_after,
+            Some(crate::layout::WindowState::PseudoTiled { rect })
+        );
     }
 
     /// Reassigning windows to another output must preserve split directions,
@@ -2133,8 +2133,8 @@ mod tests {
 
     /// Build a state with one pseudo-tiled window that has round-tripped through
     /// fullscreen (app reported fullscreen dimensions). Returns the state, the
-    /// output id, the window id, and the original pseudo-tiled width.
-    fn setup_pseudo_fullscreen_roundtrip() -> (WMState, OutputId, WindowId, i32) {
+    /// output id, the window id, and the original pseudo-tiled rect.
+    fn setup_pseudo_fullscreen_roundtrip() -> (WMState, OutputId, WindowId, Rect) {
         let mut state = WMState::new();
         let o = OutputId(1);
         let mut out = Output::new(o);
@@ -2155,11 +2155,9 @@ mod tests {
             .get(&w)
             .unwrap()
             .pseudo_tiled_rect(output_rect, ratio);
-        let pseudo_w = pseudo.width;
         state.tree_for_output(o).unwrap().set_window_state(
             w.0,
-            crate::layout::WindowState::PseudoTiled,
-            pseudo,
+            crate::layout::WindowState::PseudoTiled { rect: pseudo },
         );
 
         // Round-trip through fullscreen. (The app-reported size while
@@ -2167,7 +2165,7 @@ mod tests {
         // set here; the pseudo size must be preserved via the tree's stored rect.)
         state.tree_for_output(o).unwrap().toggle_fullscreen(w.0);
 
-        (state, o, w, pseudo_w)
+        (state, o, w, pseudo)
     }
 
     #[test]
@@ -2177,7 +2175,7 @@ mod tests {
         // reported while fullscreened. `apply_manage` proposes the arranged
         // `window_rect` directly for pseudo-tiled windows, which stays correct
         // because the pseudo `floating_rect` is preserved across the toggle.
-        let (mut state, o, w2, pseudo_w) = setup_pseudo_fullscreen_roundtrip();
+        let (mut state, o, w2, pseudo) = setup_pseudo_fullscreen_roundtrip();
 
         // Toggle fullscreen back -> pseudo.
         state.tree_for_output(o).unwrap().toggle_fullscreen(w2.0);
@@ -2191,9 +2189,12 @@ mod tests {
             .into_iter()
             .find(|(id, _, _)| *id == w2.0)
             .unwrap();
-        assert_eq!(state_w2, crate::layout::WindowState::PseudoTiled);
         assert_eq!(
-            window_rect.width, pseudo_w,
+            state_w2,
+            crate::layout::WindowState::PseudoTiled { rect: pseudo }
+        );
+        assert_eq!(
+            window_rect.width, pseudo.width,
             "pseudo window reused stale fullscreen dimensions"
         );
     }
@@ -2204,7 +2205,7 @@ mod tests {
         // restore its pre-fullscreen (output-fraction) size, not reuse the
         // fullscreen dimensions the app reports while fullscreened. This covers
         // the `resolve_toggle_rect` path that `apply_manage` does not.
-        let (mut state, _o, w, pseudo_w) = setup_pseudo_fullscreen_roundtrip();
+        let (mut state, _o, w, pseudo) = setup_pseudo_fullscreen_roundtrip();
 
         // Toggle directly to floating from fullscreen.
         state.toggle_focused_floating();
@@ -2216,9 +2217,12 @@ mod tests {
             .into_iter()
             .find(|(id, _, _)| *id == w.0)
             .unwrap();
-        assert_eq!(state_w, crate::layout::WindowState::Floating);
         assert_eq!(
-            window_rect.width, pseudo_w,
+            state_w,
+            crate::layout::WindowState::Floating { rect: pseudo }
+        );
+        assert_eq!(
+            window_rect.width, pseudo.width,
             "float toggled from fullscreen reused stale fullscreen dimensions"
         );
     }
@@ -2227,7 +2231,7 @@ mod tests {
     fn toggle_from_fullscreen_to_pseudo_keeps_pseudo_size() {
         // Same regression as above, but toggling to pseudo-tiled directly from
         // fullscreen instead of floating.
-        let (mut state, _o, w, pseudo_w) = setup_pseudo_fullscreen_roundtrip();
+        let (mut state, _o, w, pseudo) = setup_pseudo_fullscreen_roundtrip();
 
         state.toggle_focused_pseudo_tiled();
 
@@ -2238,9 +2242,12 @@ mod tests {
             .into_iter()
             .find(|(id, _, _)| *id == w.0)
             .unwrap();
-        assert_eq!(state_w, crate::layout::WindowState::PseudoTiled);
         assert_eq!(
-            window_rect.width, pseudo_w,
+            state_w,
+            crate::layout::WindowState::PseudoTiled { rect: pseudo }
+        );
+        assert_eq!(
+            window_rect.width, pseudo.width,
             "pseudo toggled from fullscreen reused stale fullscreen dimensions"
         );
     }
@@ -2297,32 +2304,39 @@ mod tests {
 
         let o2_tree = state.tree_for_output(o2).unwrap();
         assert_eq!(
-            o2_tree.window_state(tiled.0),
+            o2_tree.window_state(tiled.0).cloned(),
             Some(crate::layout::WindowState::Tiled)
         );
         assert_eq!(
-            o2_tree.window_state(floating.0),
-            Some(crate::layout::WindowState::Floating)
+            o2_tree.window_state(floating.0).cloned(),
+            Some(crate::layout::WindowState::Floating { rect: float_rect })
         );
         assert_eq!(
-            o2_tree.window_state(pseudo.0),
-            Some(crate::layout::WindowState::PseudoTiled)
+            o2_tree.window_state(pseudo.0).cloned(),
+            Some(crate::layout::WindowState::PseudoTiled { rect: pseudo_rect })
         );
         assert!(o2_tree.window_is_fullscreen(full.0));
 
         // Floating rect preserved (source/dest share origin -> no translation).
-        assert_eq!(o2_tree.window_floating_rect(floating.0), Some(float_rect));
+        let crate::layout::WindowState::Floating { rect } =
+            o2_tree.window_state(floating.0).unwrap().clone()
+        else {
+            panic!("expected floating");
+        };
+        assert_eq!(rect, float_rect);
 
-        // Fullscreen base state preserved as Tiled (not clobbered).
-        assert_eq!(
-            o2_tree.window_base_state(full.0),
-            Some(crate::layout::WindowState::Tiled)
-        );
+        // Fullscreen restore state preserved as Tiled (not clobbered).
+        let crate::layout::WindowState::Fullscreen { restore } =
+            o2_tree.window_state(full.0).unwrap().clone()
+        else {
+            panic!("expected fullscreen");
+        };
+        assert_eq!(*restore, crate::layout::WindowState::Tiled);
 
         // Un-fullscreening returns to the base Tiled state.
         o2_tree.toggle_fullscreen(full.0);
         assert_eq!(
-            o2_tree.window_state(full.0),
+            o2_tree.window_state(full.0).cloned(),
             Some(crate::layout::WindowState::Tiled)
         );
     }
@@ -2355,18 +2369,22 @@ mod tests {
 
         let o2_tree = state.tree_for_output(o2).unwrap();
         assert!(o2_tree.window_is_fullscreen(w.0));
+        let crate::layout::WindowState::Fullscreen { restore } =
+            o2_tree.window_state(w.0).unwrap().clone()
+        else {
+            panic!("expected fullscreen");
+        };
         assert_eq!(
-            o2_tree.window_base_state(w.0),
-            Some(crate::layout::WindowState::Floating)
+            *restore,
+            crate::layout::WindowState::Floating { rect: float_rect }
         );
 
         // Un-fullscreening returns to floating at the same rect.
         o2_tree.toggle_fullscreen(w.0);
         assert_eq!(
-            o2_tree.window_state(w.0),
-            Some(crate::layout::WindowState::Floating)
+            o2_tree.window_state(w.0).cloned(),
+            Some(crate::layout::WindowState::Floating { rect: float_rect })
         );
-        assert_eq!(o2_tree.window_floating_rect(w.0), Some(float_rect));
     }
 
     /// Reassign a fullscreen-over-pseudo-tiled window through the *rebuild*
@@ -2398,16 +2416,26 @@ mod tests {
 
         let o2_tree = state.tree_for_output(o2).unwrap();
         assert!(o2_tree.window_is_fullscreen(w.0));
+        let crate::layout::WindowState::Fullscreen { restore } =
+            o2_tree.window_state(w.0).unwrap().clone()
+        else {
+            panic!("expected fullscreen");
+        };
+        let expected_pseudo = crate::layout::Rect::new(480, 270, 960, 540);
         assert_eq!(
-            o2_tree.window_base_state(w.0),
-            Some(crate::layout::WindowState::PseudoTiled)
+            *restore,
+            crate::layout::WindowState::PseudoTiled {
+                rect: expected_pseudo
+            }
         );
 
         // Un-fullscreening returns to pseudo-tiled.
         o2_tree.toggle_fullscreen(w.0);
         assert_eq!(
-            o2_tree.window_state(w.0),
-            Some(crate::layout::WindowState::PseudoTiled)
+            o2_tree.window_state(w.0).cloned(),
+            Some(crate::layout::WindowState::PseudoTiled {
+                rect: expected_pseudo
+            })
         );
     }
 
@@ -2448,11 +2476,15 @@ mod tests {
         state.tree_for_output(o2).unwrap().set_output_rect(o2_rect);
 
         // Floating rect must be shifted by (dx=1920, dy=0).
-        let dst_rect = state
+        let crate::layout::WindowState::Floating { rect: dst_rect } = state
             .tree_for_output(o2)
             .unwrap()
-            .window_floating_rect(floating.0)
-            .unwrap();
+            .window_state(floating.0)
+            .unwrap()
+            .clone()
+        else {
+            panic!("expected floating");
+        };
         assert_eq!(dst_rect, crate::layout::Rect::new(100 + 1920, 50, 400, 300));
     }
 
