@@ -2,7 +2,7 @@
 //!
 //! This module is intentionally Lua-specific. It converts Lua tables
 //! into the shared config types defined in `config::mod`.
-use super::{Config, ConfigError, KeyBindingConfig, LayoutConfig, Result, parser};
+use super::{Config, ConfigError, KeyBindingConfig, LayoutConfig, Result, parser, validate_ratio};
 use mlua::{Lua, Table, Value};
 use std::path::Path;
 
@@ -91,6 +91,10 @@ fn parse_layout_table(table: Table) -> Result<LayoutConfig> {
     let margin_right = table.get::<Option<i32>>("margin_right")?;
     let margin_bottom = table.get::<Option<i32>>("margin_bottom")?;
     let margin_left = table.get::<Option<i32>>("margin_left")?;
+    let default_float_ratio = validate_ratio(
+        "default_float_ratio",
+        table.get::<Option<f32>>("default_float_ratio")?,
+    )?;
 
     let margins = match table.get::<Option<Table>>("margins")? {
         Some(margins_table) => Some(parser::RawMargins {
@@ -109,6 +113,7 @@ fn parse_layout_table(table: Table) -> Result<LayoutConfig> {
         margin_bottom,
         margin_left,
         margins,
+        default_float_ratio,
     ))
 }
 
