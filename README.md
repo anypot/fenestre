@@ -6,7 +6,7 @@ Fenestre is an experimental Wayland window manager for [River](https://codeberg.
 
 ## Install / Build
 
-Requires Rust 1.85+ (edition 2024) and the Wayland, xkbcommon, and Lua 5.4 development libraries. On Debian/Ubuntu:
+Requires Rust 1.88+ (edition 2024) and the Wayland, xkbcommon, and Lua 5.4 development libraries. On Debian/Ubuntu:
 
 ```sh
 sudo apt install libwayland-dev libxkbcommon-dev liblua5.4-dev

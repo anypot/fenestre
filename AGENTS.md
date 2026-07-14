@@ -374,4 +374,4 @@ with a River compositor that supports:
 - `river_window_management_v1` (version 5)
 - `river_xkb_bindings_v1` (version 3)
 
-Building requires Rust 1.84+ (edition 2024) and Wayland development libraries.
+Building requires Rust 1.88+ (edition 2024) and Wayland development libraries.
