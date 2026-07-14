@@ -86,24 +86,6 @@ fenestre/
   README.md                - User-facing docs: install/build, configuration, default keybindings, status
 ```
 
-## Refactor status (`refactor-architecture` branch)
-
-The `refactor-architecture` branch (based on `main` at the `archi-refactor-plan`
-merge, `3848736`) delivers **Initiatives 0–3** of the plan in
-`docs/refactor-plan.md`. Initiative 4 (layout trait) and 5 (config schema unify)
-are **not** part of this branch and remain future work.
-
-| Initiative | Commit | Delivered |
-|------------|--------|-----------|
-| 0 — Characterization tests (prerequisite) | `9ca6a03` | Coverage audit of risky paths; **6 new tests** covering the `reassign_*` mixed-mode/floating-translation and multi-output focus-reconciliation gaps. Suite went 166 → 172. |
-| 1 — Pure core + IO adapter (hexagonal) | `79cc350` | Introduced the `Event` (`state/events.rs`) and `Effect` (`state/effects.rs`) domain enums and the `state/adapter.rs` protocol adapter. State mutation moved out of `handlers.rs`; core is now `WMState::handle_event(Event)`, a pure reducer free of `protocol::`. |
-| 2 — Declarative scene reconciler | `85faa6d` | `desired_scene()` is a pure read-only snapshot; `apply_manage`/`apply_render` diff it against their own `last_manage_scene` / `last_render_scene` snapshots and return `Vec<Effect>`. Retired imperative transition checks. |
-| 3 — Make illegal states unrepresentable | `3c923f8` | `WindowState` became an enum-with-data (`Floating { rect }`, `PseudoTiled { rect }`, `Fullscreen { restore }`), removing the parallel `base_state` / `floating_rect` node fields and the `Window.mode` cache. |
-
-The architecture, reconciler, and `WindowState` vocabulary described in the Core
-Concepts below reflect this branch. For the full goals, sequencing, and residual
-gaps, see `docs/refactor-plan.md`.
-
 ## Core Concepts
 
 ### WMState
@@ -118,8 +100,8 @@ gaps, see `docs/refactor-plan.md`.
 ### Architecture (hexagonal)
 
 The `state` module is split into three layers so the core logic is testable
-without a live compositor (introduced across the `refactor-architecture` branch,
-Initiatives 1–3; see `docs/refactor-plan.md`):
+without a live compositor. See `docs/refactor-plan.md` for the full design
+rationale and sequencing:
 
 - **Core (pure):** `WMState` and the layout engine. Knows nothing about River/Wayland.
   The single entry point is `WMState::handle_event(Event)`, a pure reducer over
@@ -200,8 +182,8 @@ between renders are still caught.
   focus/move/resize commands target.
 - `insert_window` splits the currently focused window along its longest side.
 - `remove_window` collapses empty splits; distinguishes `LeafRemoved`, `Replaced`, `Modified`, `NotFound`.
-- Window states are an **enum-with-data** living on the tree node (`src/layout/tree.rs`,
-  Initiative 3 — "make illegal states unrepresentable"):
+- Window states are an **enum-with-data** living on the tree node (`src/layout/tree.rs`)
+  so illegal states are unrepresentable:
   - `Tiled`
   - `Floating { rect: Rect }`
   - `PseudoTiled { rect: Rect }`
@@ -365,6 +347,35 @@ between renders are still caught.
   manual child data hashing is commented out in `handlers.rs`.
 - `render_order_cache` must be cleared on any structural change to windows or focus.
 - `ensure_focused_output` falls back to the first output if none is focused yet.
+
+## Planned work
+
+Two larger improvements are scoped but not yet started. See `docs/refactor-plan.md`
+for the full design, sequencing, and risk notes.
+
+### Layout as a pluggable trait
+
+BSP tiling is hard-wired into `layout/tree.rs`. Adding alternative layouts
+(master-stack, grid, tabbed, monocle) currently means surgery in core.
+
+- Define a `Layout` trait against the minimal `LayoutTree` API core actually
+  needs (arrange windows into rects; insert / remove / focus-navigation hooks).
+- Implement it for the existing BSP tree first (no behaviour change).
+- Route core through the trait (one `Box<dyn Layout>` / enum per output).
+  Floating and fullscreen handling stay outside the tiling layout.
+
+### Unify the config schema
+
+`config/lua.rs` and `config/toml.rs` are parallel loaders feeding a shared
+`parser`. Adding one field (as with `default_float_ratio`) means edits in three
+files, and the two paths can drift.
+
+- Define the config shape once as serde structs with validation.
+- Have TOML deserialize directly into those structs.
+- Bridge the Lua table → serde (e.g. an `mlua` value → `serde` deserializer) so
+  both formats share one validation / build path.
+- Collapse `parser::build_layout` and the per-format duplication; adding a field
+  becomes a one-line struct change.
 
 ## Docker / Environment Notes
 
