@@ -908,6 +908,20 @@ impl LayoutTree {
         windows
     }
 
+    /// Read-only variant of [`LayoutTree::arranged_windows`].
+    ///
+    /// Returns each window's current rect/state without re-arranging the tree,
+    /// so it can be called from a `&self` context (e.g. the reconciler's
+    /// `desired_scene`). Callers must have arranged the tree first (via
+    /// `arranged_windows`, which populates node geometry from `output_rect`).
+    pub(crate) fn arranged_windows_readonly(&self) -> Vec<(u32, Rect, WindowState)> {
+        let mut windows = Vec::new();
+        if let Some(root) = self.root.as_ref() {
+            collect_windows_with_state(root, self.output_rect, &mut windows);
+        }
+        windows
+    }
+
     #[cfg(test)]
     pub(crate) fn root_window(&self) -> Option<u32> {
         self.root.as_ref().and_then(|root| root.window)

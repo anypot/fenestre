@@ -210,6 +210,25 @@ enter/leave transition detection in `apply_manage`, and (b) focus/z priority in
 window, including ones that did not pass through a manage cycle (e.g. focus-only
 changes between renders), or transition detection and z-ordering will regress.
 
+Note (implementation): River splits window management into **two** protocol
+phases — `ManageStart` (dimensions / fullscreen / server-side-decoration
+effects) and `RenderStart` (position / z-order / border effects). The
+reconciler therefore keeps **two independent scene snapshots** rather than one:
+`last_manage_scene` (diffed and updated by `apply_manage`) and
+`last_render_scene` (diffed and updated by `apply_render`). Each phase diffs the
+fresh `desired_scene()` against *its own* prior snapshot and emits only the
+effects that belong to that phase.
+
+This split is not optional: a single shared snapshot would let `apply_manage`
+overwrite the baseline before `apply_render` runs, so a newly mapped window
+would receive its manage-phase effects but never its render-phase effects (it would
+already be present in the snapshot with an equal scene and diff to zero). The two
+snapshots also preserve the "every window, every cycle" requirement from the note
+above — each phase re-snapshots z-priority and border for *all* windows, so a
+focus-only change that arrives between renders is still caught by
+`last_render_scene`. Keep both snapshots in mind whenever touching the reconciler;
+collapsing them back into one silently drops render-phase effects for new windows.
+
 ### Risk / effort
 Medium. Best done right after #1. **~3–5 days.**
 

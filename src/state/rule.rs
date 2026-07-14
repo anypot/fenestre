@@ -91,7 +91,6 @@ impl WindowRules {
         let before_rect = tree.window_floating_rect(window.id.0);
 
         let mut applied = false;
-        let mut last_target = crate::layout::WindowState::Tiled;
         for rule in &self.rules {
             if rule.is_pending_metadata(app_id, title) {
                 continue;
@@ -104,7 +103,6 @@ impl WindowRules {
                 .floating_rect
                 .unwrap_or_else(|| window.pseudo_tiled_rect(fallback_rect, ratio));
             tree.set_window_state(window.id.0, rule.target, rect);
-            last_target = rule.target;
             applied = true;
         }
 
@@ -128,10 +126,6 @@ impl WindowRules {
         if !applied {
             return false;
         }
-
-        // Sync the persistent mode so reassign / toggle paths stay consistent
-        // with the tree.
-        window.mode = last_target;
 
         let after_state = tree.window_state(window.id.0);
         let after_rect = tree.window_floating_rect(window.id.0);

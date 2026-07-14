@@ -8,6 +8,7 @@ use super::output::OutputId;
 use super::seat::SeatId;
 use super::window::WindowId;
 use super::wm::WMState;
+use wayland_client::QueueHandle;
 
 impl WMState {
     /// Set the River window proxy on an already-created window entry.
@@ -44,9 +45,9 @@ impl WMState {
     }
 
     /// Drain all pending effects and apply their protocol calls.
-    pub(super) fn apply_effects(&mut self, effects: Vec<Effect>) {
+    pub(super) fn apply_effects(&mut self, _qh: &QueueHandle<Self>, effects: Vec<Effect>) {
         for effect in effects {
-            self.apply_effect(effect);
+            self.apply_effect(_qh, effect);
         }
     }
 
@@ -80,7 +81,7 @@ impl WMState {
         self.windows_by_proxy.remove(proxy);
     }
 
-    fn apply_effect(&self, effect: Effect) {
+    fn apply_effect(&mut self, qh: &QueueHandle<Self>, effect: Effect) {
         match effect {
             Effect::ProposeDimensions {
                 window_id,
@@ -117,6 +118,13 @@ impl WMState {
                     && let Some(river_window) = window.river_window.as_ref()
                 {
                     river_window.use_ssd();
+                }
+            }
+            Effect::EnsureNode { window_id } => {
+                if let Some(window) = self.windows.get_mut(&window_id)
+                    && let Some(river_window) = window.river_window.as_ref()
+                {
+                    window.node = Some(river_window.get_node(qh, ()));
                 }
             }
             Effect::SetBorders {
@@ -161,7 +169,14 @@ impl WMState {
                     && let Some(seat) = self.seats.get(&seat_id)
                     && let Some(window) = self.windows.get(&window_id)
                 {
-                    seat.focus_window(window);
+                    // Focus is a River call; make it here in the adapter
+                    // rather than delegating to `Seat::focus_window`, so
+                    // the core `Seat` stays free of protocol calls.
+                    if let (Some(river_seat), Some(river_window)) =
+                        (&seat.river_seat, &window.river_window)
+                    {
+                        river_seat.focus_window(river_window);
+                    }
                 }
             }
         }

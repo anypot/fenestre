@@ -85,7 +85,7 @@ impl Dispatch<RiverWindowManagerV1, ()> for WMState {
             }
             Event::ManageStart => {
                 let effects = state.apply_manage(qh);
-                state.apply_effects(effects);
+                state.apply_effects(qh, effects);
                 if state.xkb_bindings_dirty {
                     // Destroy stale bindings before creating/enabling the desired set.
                     state.destroy_pending_keybindings();
@@ -97,8 +97,8 @@ impl Dispatch<RiverWindowManagerV1, ()> for WMState {
                 proxy.manage_finish();
             }
             Event::RenderStart => {
-                let effects = state.apply_render(qh);
-                state.apply_effects(effects);
+                let effects = state.apply_render();
+                state.apply_effects(qh, effects);
                 proxy.render_finish();
             }
             Event::SessionLocked => {

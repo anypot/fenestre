@@ -2,7 +2,9 @@
 //!
 //! Each variant carries the data needed to apply the corresponding protocol
 //! call after state mutation is complete. Child-object creation (`get_node`)
-//! and `event_created_child` proxy lifecycle remain inline.
+//! is routed through [`Effect::EnsureNode`] and applied by the adapter
+//! (it needs the `QueueHandle`); `event_created_child` proxy lifecycle
+//! remains inline at the handler/adapter boundary.
 use super::output::OutputId;
 use super::window::WindowId;
 
@@ -24,6 +26,15 @@ pub(crate) enum Effect {
         window_id: WindowId,
     },
     UseSsd {
+        window_id: WindowId,
+    },
+    /// Ensure the River node child object exists for the window.
+    ///
+    /// Routes the `get_node` child-object creation (which requires the
+    /// `QueueHandle`) through the adapter instead of being called
+    /// inline in the core. The adapter stores the resulting proxy on
+    /// `Window::node` for the later `SetPosition` / `PlaceTop` effects.
+    EnsureNode {
         window_id: WindowId,
     },
     SetBorders {
