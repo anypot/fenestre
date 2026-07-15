@@ -6,6 +6,7 @@ use super::{ConfigError, KeyBindingConfig, KeyBindingTarget, LayoutConfig, Resul
 use crate::command::Command;
 use crate::layout::Rect;
 use crate::state::rule::{RulePattern, WindowRule};
+use serde::{Deserialize, Serialize};
 use xkbcommon::xkb;
 
 /// Parse an optional target string into `KeyBindingTarget`.
@@ -266,17 +267,6 @@ pub(super) fn build_raw_pattern(name: &str, value: String, mode: &str) -> Result
     }
 }
 
-/// Build a `RawPattern` from already-extracted `value` and optional `match`
-/// mode, applying the `exact` default in one shared spot.
-pub(super) fn build_pattern_field(
-    name: &str,
-    value: String,
-    mode: Option<String>,
-) -> Result<RawPattern> {
-    let mode = mode.unwrap_or_else(|| "exact".to_string());
-    build_raw_pattern(name, value, &mode)
-}
-
 /// Compile a `RawPattern` into a `RulePattern`, performing regex compilation
 /// (with the `size_limit` guard from `RulePattern::regex`) in one shared spot.
 pub(super) fn build_pattern(name: &str, pattern: RawPattern) -> Result<RulePattern> {
@@ -289,7 +279,8 @@ pub(super) fn build_pattern(name: &str, pattern: RawPattern) -> Result<RulePatte
 }
 
 /// Format-neutral margins table consumed by `build_layout`.
-pub(super) struct RawMargins {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct RawMargins {
     pub top: Option<i32>,
     pub right: Option<i32>,
     pub bottom: Option<i32>,
@@ -368,13 +359,6 @@ pub(super) fn build_keybinding(
 
     parse_keybinding(target, keysym, &modifier_refs, &command_refs)
         .ok_or_else(|| ConfigError::InvalidConfig("Invalid keybinding".to_string()))
-}
-
-/// Shared validation hook for extracted string lists. Used by both the Lua
-/// and TOML loaders so any list-level validation rules live in exactly one
-/// place.
-pub(super) fn validate_string_list(strings: &[String]) -> Result<Vec<String>> {
-    Ok(strings.to_vec())
 }
 
 #[cfg(test)]

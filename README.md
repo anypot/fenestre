@@ -136,4 +136,4 @@ All matching rules apply, later wins. Rules are evaluated once per window as its
 
 Working: River integration, Lua + TOML config loading (TOML preferred), per-output BSP layout with hotplug reassignment, compositor-side borders, window rules, and keyboard-driven focus/move/resize.
 
-Not yet implemented: pointer-driven move/resize, IPC, robust config validation, and some commands (rotate, cycle).
+Not yet implemented: pointer-driven move/resize, IPC, and some commands (rotate, cycle).

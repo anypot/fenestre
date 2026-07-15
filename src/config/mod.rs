@@ -10,6 +10,7 @@
 pub mod defaults;
 mod lua;
 pub mod parser;
+pub mod schema;
 mod toml;
 
 use crate::command::Command;

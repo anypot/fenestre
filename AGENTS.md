@@ -40,6 +40,12 @@ No `rustfmt.toml` or `clippy.toml` are present yet; rely on Cargo defaults.
 
 ## Repository Structure
 
+This repo is indexed by CodeGraph (a `.codegraph/` directory exists at the root).
+Before grepping, finding, or reading files to locate or understand code, prefer
+CodeGraph: the `codegraph_explore` MCP tool (or `codegraph explore "<query>"` in
+the shell) returns the relevant symbols' source plus call paths in one call. If
+`.codegraph/` is absent, skip it and use normal grep/Read.
+
 ```
 fenestre/
   Cargo.toml               - Package manifest (single crate, edition 2024)
@@ -58,6 +64,7 @@ fenestre/
       lua.rs               - Lua config loader
       toml.rs              - TOML config loader
       parser.rs            - Keysym / modifier / target / command parsing
+      schema.rs            - Unified serde schema: RawConfig + build_config (shared by lua.rs/toml.rs)
     layout/
       mod.rs               - Module declaration, re-exports
       tree.rs              - BSP tree (LayoutTree, LayoutNode, Rect, capped_rect, split/focus/arrange, resize logic)
@@ -272,6 +279,14 @@ between renders are still caught.
 - Both Lua (`.lua`) and TOML (`.toml`) config formats are supported. TOML is
   preferred: when both `fenestre.toml` and `fenestre.lua` exist, only the TOML
   file is loaded and the Lua file is ignored.
+- Both loaders share one serde-backed schema defined in `config/schema.rs`:
+  `RawConfig` and the `Raw*` types describe the config shape once. TOML
+  deserializes directly into `RawConfig`; Lua tables are converted to
+  `serde_json::Value` via an `mlua`→`serde` bridge, then deserialized through
+  the same `RawConfig`. `build_config` validates and converts into the runtime
+  `Config`; field-level errors are named via the `named_opt_de!` wrappers. The
+  format-neutral `parser` helpers (`build_layout`, `build_keybinding`,
+  `build_rule`, `build_pattern`) remain the shared validation core.
 - Canonical, test-validated example configs live in `examples/`
   (`fenestre.toml`, `fenestre.lua`, `advanced.lua`, `minimal.toml`).
 - Default search paths (TOML wins at the file level):
@@ -318,6 +333,16 @@ between renders are still caught.
 - `#[allow(dead_code)]` is used at module level where appropriate.
 - No `println!` / `eprintln!` in library code; use `log` macros.
 
+## Work in Progress / Gotchas
+
+- Some command implementations are placeholders: rotate and cycle are not wired.
+- Pointer-driven move/resize is not implemented.
+- IPC is not implemented.
+- `wayland-client` event_created_child is used for River child objects;
+  manual child data hashing is commented out in `handlers.rs`.
+- `render_order_cache` must be cleared on any structural change to windows or focus.
+- `ensure_focused_output` falls back to the first output if none is focused yet.
+
 ## Important Invariants
 
 1. **Hexagonal boundary**: `state/wm.rs` + `layout/` are the pure core — no
@@ -338,19 +363,9 @@ between renders are still caught.
    phase must re-snapshot z-priority and border for **every** window so focus-only
    changes between renders are still caught.
 
-## Work in Progress / Gotchas
-
-- Some command implementations are placeholders: rotate and cycle are not wired.
-- Pointer-driven move/resize is not implemented.
-- IPC is not implemented.
-- `wayland-client` event_created_child is used for River child objects;
-  manual child data hashing is commented out in `handlers.rs`.
-- `render_order_cache` must be cleared on any structural change to windows or focus.
-- `ensure_focused_output` falls back to the first output if none is focused yet.
-
 ## Planned work
 
-Two larger improvements are scoped but not yet started. See `docs/refactor-plan.md`
+One larger improvement is scoped but not yet started. See `docs/refactor-plan.md`
 for the full design, sequencing, and risk notes.
 
 ### Layout as a pluggable trait
@@ -363,19 +378,6 @@ BSP tiling is hard-wired into `layout/tree.rs`. Adding alternative layouts
 - Implement it for the existing BSP tree first (no behaviour change).
 - Route core through the trait (one `Box<dyn Layout>` / enum per output).
   Floating and fullscreen handling stay outside the tiling layout.
-
-### Unify the config schema
-
-`config/lua.rs` and `config/toml.rs` are parallel loaders feeding a shared
-`parser`. Adding one field (as with `default_float_ratio`) means edits in three
-files, and the two paths can drift.
-
-- Define the config shape once as serde structs with validation.
-- Have TOML deserialize directly into those structs.
-- Bridge the Lua table → serde (e.g. an `mlua` value → `serde` deserializer) so
-  both formats share one validation / build path.
-- Collapse `parser::build_layout` and the per-format duplication; adding a field
-  becomes a one-line struct change.
 
 ## Docker / Environment Notes
 
