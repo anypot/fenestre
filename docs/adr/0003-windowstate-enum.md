@@ -36,12 +36,16 @@ stateDiagram-v2
     [*] --> Tiled
     Tiled --> Floating: toggle_floating
     Tiled --> PseudoTiled: toggle_pseudo_tiled
-    Tiled --> Fullscreen: toggle_fullscreen\nrestore = Tiled
+    Tiled --> Fullscreen: toggle_fullscreen
     Floating --> Tiled: toggle_floating
     PseudoTiled --> Tiled: toggle_pseudo_tiled
-    Fullscreen --> Tiled: toggle_fullscreen\nrestore applied
-    Floating --> PseudoTiled: toggle_pseudo_tiled
-    PseudoTiled --> Floating: toggle_floating
+    Fullscreen --> Tiled: toggle_fullscreen (restore = prior state)
+    Floating --> Fullscreen: toggle_fullscreen (restore = Floating)
+    PseudoTiled --> Fullscreen: toggle_fullscreen (restore = PseudoTiled)
+    note right of Fullscreen
+        restore: Box<WindowState>
+        remembers exact prior variant
+    end note
 ```
 
 Every toggle is total: it is derived from the current variant via `mem::replace`,

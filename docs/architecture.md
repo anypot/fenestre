@@ -13,7 +13,9 @@ the larger refactor roadmap lives in `refactor-plan.md`.
   keybindings, focus, config, layout, and pending request queues.
 - Defined in `src/state/wm.rs`. Scene snapshot types and the manage/render
   reconciler live in `src/state/scene.rs`. Output reassignment (hotplug/remove)
-  logic lives in `src/state/reassign.rs` as an extension impl on `WMState`.
+  logic lives in `src/state/reassign.rs`, and focus management (focus stack,
+  global focus pointers, close-window reconciliation) lives in
+  `src/state/focus.rs` — both as extension impls on `WMState`.
 - Public crate surface is intentionally tiny: re-exported from `src/state/mod.rs`.
 - Most fields are `pub(super)` to keep the `state` module boundary strict.
 - Maintains three `HashMap` proxy indexes (`windows_by_proxy`, `outputs_by_proxy`, `seats_by_proxy`) for O(1) lookup of Wayland objects, plus a per-output window grouping index `windows_by_output` (`HashMap<OutputId, HashSet<WindowId>>`) for O(1) lookup of which windows belong to an output.
@@ -96,12 +98,10 @@ between renders are still caught.
 flowchart TD
     River[River: ManageStart / RenderStart] --> Handlers[handlers.rs\nRiver event -> Event]
     Handlers --> HandleEvent[WMState::handle_event\nreconcile layout/focus/close]
-    HandleEvent --> Manage[apply_manage\nManageStart effects]
+    HandleEvent --> Manage[apply_manage\nManageStart effects\ndiffs against last_manage_scene]
     Manage -->|Vec&lt;Effect&gt;| Adapter[adapter.rs\nRiver protocol calls]
-    Adapter --> Render[apply_render\nRenderStart effects]
+    Adapter --> Render[apply_render\nRenderStart effects\ndiffs against last_render_scene]
     Render -->|Vec&lt;Effect&gt;| Adapter
-    Manage -. diff against .last_manage_scene
-    Render -. diff against .last_render_scene
 ```
 
 ### BSP Layout Engine (`layout/tree.rs`)
@@ -131,12 +131,15 @@ flowchart TD
 
 ### Focus Model
 
-- Focus is coordinated between `WMState` and `LayoutTree`.
+- Focus is coordinated between `WMState` and `LayoutTree`. The focus stack, global
+  focus pointers, and close-window reconciliation live in `src/state/focus.rs`
+  (`WMState::push_focus`, `focus_window_id`, `remove_focus_for_window`,
+  `close_window_focus_reconcile`); the layout tree itself lives in `src/layout/`.
 - `state.focused_window` holds the semantic focus; `layout.focused` holds the tree focus.
-- `push_focus` updates `focus_stack` and `focused_window` only (low-level helper).
-- `focus_window_id` updates all three plus `pending_focus` and clears `render_order_cache`.
+- `push_focus` (in `focus.rs`) updates `focus_stack` and `focused_window` only (low-level helper).
+- `focus_window_id` (in `focus.rs`) updates all three plus `pending_focus` and clears `render_order_cache`.
   Callers should use `focus_window_id` rather than mutating `state.focused_window` directly.
-- On window close, `WMState::close_window_focus_reconcile` routes focus only when
+- On window close, `WMState::close_window_focus_reconcile` (in `focus.rs`) routes focus only when
   the closed window was the globally focused one. In that case post-close focus goes
   to the layout tree's preferred next window on that output, or — if that output just
   emptied — falls back to the global `focus_stack`. Closing a non-focused window (on
