@@ -13,6 +13,7 @@ mod events;
 mod handlers;
 mod keybindings;
 mod output;
+mod reassign;
 pub mod rule;
 mod scene;
 mod seat;

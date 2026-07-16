@@ -59,7 +59,7 @@ fenestre/
     config/                - Config, KeyBindingConfig, KeyBindingTarget, ConfigError, loaders (lua/toml), schema, parser
     layout/                - BSP tree (LayoutTree, LayoutNode, Rect, split/focus/arrange, resize logic)
     protocol/              - wayland-scanner generated River protocol bindings
-    state/                 - WMState, Event/Effect domains, adapter, handlers, commands, config, keybindings, window/output/seat proxies, rule
+    state/                 - WMState, Event/Effect domains, adapter, handlers, commands, config, keybindings, window/output/seat proxies, rule, reassign
   examples/
     fenestre.toml          - Full TOML config example (canonical, validated by tests)
     fenestre.lua           - Full Lua config example (validated by tests)
