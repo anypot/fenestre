@@ -1,8 +1,10 @@
 //! Lua configuration loader.
 //!
 //! This module is intentionally Lua-specific. It converts Lua tables
-//! into the shared config types defined in `config::mod`.
-use super::{Config, ConfigError, KeyBindingConfig, LayoutConfig, Result, parser, validate_ratio};
+//! into the shared schema types defined in `schema`, then validates and
+//! converts them into the runtime `Config` via `build_config`.
+use super::schema;
+use super::{Config, ConfigError, Result};
 use mlua::{Lua, Table, Value};
 use std::path::Path;
 
@@ -11,238 +13,25 @@ pub(crate) fn load_from_lua(path: &Path) -> Result<Config> {
     let lua = Lua::new();
     let source = std::fs::read_to_string(path).map_err(mlua::Error::external)?;
     let table: Table = lua.load(source).call(())?;
-    parse_config_table(table)
-}
-
-/// Parse the top-level Lua config table.
-///
-/// Missing `keybindings` is valid and means "no user keybindings".
-/// Non-table `keybindings` is invalid.
-fn parse_config_table(table: Table) -> Result<Config> {
-    let keybindings = parse_keybindings_table(table.get("keybindings")?)?;
-    let rules = parse_rules_table(table.get("rules")?)?;
-
-    let layout = match table.get::<Option<Value>>("layout")? {
-        Some(Value::Table(layout_table)) => parse_layout_table(layout_table)?,
-        Some(_) => {
-            return Err(ConfigError::InvalidConfig(
-                "Expected layout to be a table".to_string(),
-            ));
-        }
-        None => LayoutConfig::default(),
-    };
-
-    let decorations = table.get::<Option<bool>>("decorations")?.unwrap_or(true);
-
-    let border_width = table.get::<Option<i32>>("border_width")?;
-    let border_color_focused = table.get::<Option<u32>>("border_color_focused")?;
-    let border_color_unfocused = table.get::<Option<u32>>("border_color_unfocused")?;
-    let resize_delta_ratio = table.get::<Option<f64>>("resize_delta_ratio")?;
-    let resize_delta_percent = table.get::<Option<f32>>("resize_delta_percent")?;
-
-    Ok(Config {
-        layout,
-        decorations,
-        border_width,
-        border_color_focused,
-        border_color_unfocused,
-        resize_delta_ratio,
-        resize_delta_percent,
-        keybindings,
-        rules,
-    })
-}
-
-fn parse_lua_table_list<T, F>(value: Option<Value>, name: &str, parse_item: F) -> Result<Vec<T>>
-where
-    F: Fn(Table) -> Result<T>,
-{
-    let Some(value) = value else {
-        return Ok(Vec::new());
-    };
-
-    let Value::Table(table) = value else {
-        return Err(ConfigError::InvalidConfig(format!(
-            "Expected {} to be a table",
-            name
-        )));
-    };
-
-    let mut items = Vec::new();
-    for pair in table.pairs::<Value, Table>() {
-        let (_, item_table) = pair?;
-        items.push(parse_item(item_table)?);
-    }
-    Ok(items)
-}
-
-fn parse_keybindings_table(keybindings_value: Option<Value>) -> Result<Vec<KeyBindingConfig>> {
-    parse_lua_table_list(keybindings_value, "keybindings", parse_keybinding_table)
-}
-
-/// Parse a Lua layout table into `LayoutConfig`.
-///
-/// Supports both flat keys (`gap`, `margin_top`, ...) and a nested `margins`
-/// table with `top`/`right`/`bottom`/`left` keys. The nested table takes
-/// precedence for individual edges it defines.
-fn parse_layout_table(table: Table) -> Result<LayoutConfig> {
-    let gap = table.get::<Option<i32>>("gap")?;
-    let margin_top = table.get::<Option<i32>>("margin_top")?;
-    let margin_right = table.get::<Option<i32>>("margin_right")?;
-    let margin_bottom = table.get::<Option<i32>>("margin_bottom")?;
-    let margin_left = table.get::<Option<i32>>("margin_left")?;
-    let default_float_ratio = validate_ratio(
-        "default_float_ratio",
-        table.get::<Option<f32>>("default_float_ratio")?,
-    )?;
-
-    let margins = match table.get::<Option<Table>>("margins")? {
-        Some(margins_table) => Some(parser::RawMargins {
-            top: margins_table.get::<Option<i32>>("top")?,
-            right: margins_table.get::<Option<i32>>("right")?,
-            bottom: margins_table.get::<Option<i32>>("bottom")?,
-            left: margins_table.get::<Option<i32>>("left")?,
-        }),
-        None => None,
-    };
-
-    Ok(parser::build_layout(
-        gap,
-        margin_top,
-        margin_right,
-        margin_bottom,
-        margin_left,
-        margins,
-        default_float_ratio,
-    ))
-}
-
-/// Parse one Lua keybinding table into a shared `KeyBindingConfig`.
-fn parse_keybinding_table(binding: Table) -> Result<KeyBindingConfig> {
-    let target_name: Option<String> = binding.get("target")?;
-    let keysym_name: String = binding.get("keysym")?;
-    let modifier_names = match binding.get::<Option<Value>>("modifiers")? {
-        Some(value) => parse_string_list(value)?,
-        None => {
-            return Err(ConfigError::InvalidConfig(
-                "Missing keybinding modifiers".to_string(),
-            ));
-        }
-    };
-    let command_tokens = match binding.get::<Option<Value>>("command")? {
-        Some(value) => parse_string_list(value)?,
-        None => {
-            return Err(ConfigError::InvalidConfig(
-                "Missing keybinding command".to_string(),
-            ));
-        }
-    };
-
-    parser::build_keybinding(
-        target_name.as_deref(),
-        &keysym_name,
-        &modifier_names,
-        &command_tokens,
-    )
-}
-
-/// Parse a Lua string or array of strings.
-///
-/// This supports both:
-///
-/// ```lua
-/// command = "close"
-/// ```
-///
-/// and:
-///
-/// ```lua
-/// command = { "spawn", "foot" }
-/// ```
-fn parse_string_list(value: mlua::Value) -> Result<Vec<String>> {
-    let strings = match value {
-        mlua::Value::String(string) => vec![string.to_str()?.to_string()],
-        mlua::Value::Table(table) => {
-            let mut values = Vec::new();
-            for value in table.sequence_values::<String>() {
-                values.push(value?);
-            }
-            values
-        }
-        _ => {
-            return Err(ConfigError::InvalidConfig(
-                "Expected string or array of strings".to_string(),
-            ));
-        }
-    };
-    parser::validate_string_list(&strings)
-}
-
-fn parse_rules_table(rules_value: Option<Value>) -> Result<Vec<crate::state::rule::WindowRule>> {
-    parse_lua_table_list(rules_value, "rules", parse_rule_table)
-}
-
-fn parse_rule_table(rule: Table) -> Result<crate::state::rule::WindowRule> {
-    // `app_id` / `title` accept either a plain string (exact match) or a table
-    // `{ value = "...", match = "exact" | "prefix" | "regex" }`. At least one
-    // matcher must be present.
-    let app_id = parse_pattern_field(&rule, "app_id")?;
-    let title = parse_pattern_field(&rule, "title")?;
-
-    let mode_str: String = rule.get("mode")?;
-
-    let floating_rect = match rule.get::<Option<Value>>("floating_rect")? {
-        Some(Value::Table(rect_table)) => {
-            let x = rect_table.get::<Option<i32>>("x")?.unwrap_or(0);
-            let y = rect_table.get::<Option<i32>>("y")?.unwrap_or(0);
-            let width = rect_table.get::<Option<i32>>("width")?.unwrap_or(0);
-            let height = rect_table.get::<Option<i32>>("height")?.unwrap_or(0);
-            Some(crate::layout::Rect::new(x, y, width, height))
-        }
-        Some(_) => {
-            return Err(ConfigError::InvalidConfig(
-                "Expected floating_rect to be a table".to_string(),
-            ));
-        }
-        None => None,
-    };
-
-    parser::build_rule(app_id, title, &mode_str, floating_rect)
-}
-
-/// Parse an `app_id`/`title` matcher: a plain string is an exact match; a table
-/// `{ value, match }` selects `exact` (default), `prefix`, or `regex`.
-fn parse_pattern_field(rule: &Table, name: &str) -> Result<Option<parser::RawPattern>> {
-    match rule.get::<Option<Value>>(name)? {
-        None => Ok(None),
-        Some(Value::String(s)) => Ok(Some(parser::RawPattern::Exact(s.to_str()?.to_string()))),
-        Some(Value::Table(pattern)) => {
-            let value: String = pattern.get("value")?;
-            let mode = match pattern.get::<Option<Value>>("match")? {
-                Some(Value::String(s)) => Some(s.to_str()?.to_string()),
-                Some(_) => {
-                    return Err(ConfigError::InvalidConfig(
-                        "Expected match to be a string".to_string(),
-                    ));
-                }
-                None => None,
-            };
-            Ok(Some(parser::build_pattern_field(name, value, mode)?))
-        }
-        Some(_) => Err(ConfigError::InvalidConfig(format!(
-            "Expected {name} to be a string or table"
-        ))),
-    }
+    let json = schema::mlua_value_to_json_value(Value::Table(table))?;
+    let raw: schema::RawConfig = serde_json::from_value(json).map_err(|e| {
+        let msg = e.to_string();
+        // Strip the serde_json " at line X column Y" suffix, which refers to
+        // the intermediate JSON representation, not the Lua source file.
+        let msg = msg.split(" at line ").next().unwrap_or(&msg).trim_end();
+        ConfigError::InvalidConfig(msg.to_string())
+    })?;
+    schema::build_config(raw)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ConfigError, KeyBindingConfig, load_from_lua, parse_config_table, parse_string_list,
-    };
+    use super::load_from_lua;
     use crate::command::Command;
+    use crate::config::ConfigError;
     use crate::config::KeyBindingTarget;
-    use mlua::{Lua, Value};
+    use crate::config::schema;
+    use mlua::Lua;
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -253,7 +42,10 @@ mod tests {
     const SUPER: u32 = 64;
     const SHIFT: u32 = 1;
 
-    fn assert_binding(binding: &KeyBindingConfig, expected: &KeyBindingConfig) {
+    fn assert_binding(
+        binding: &crate::config::KeyBindingConfig,
+        expected: &crate::config::KeyBindingConfig,
+    ) {
         assert_eq!(binding.target, expected.target);
         assert_eq!(binding.keysym, expected.keysym);
         assert_eq!(binding.modifiers, expected.modifiers);
@@ -265,8 +57,8 @@ mod tests {
         keysym: u32,
         modifiers: u32,
         command: Command,
-    ) -> KeyBindingConfig {
-        KeyBindingConfig {
+    ) -> crate::config::KeyBindingConfig {
+        crate::config::KeyBindingConfig {
             target,
             keysym,
             modifiers,
@@ -283,45 +75,50 @@ mod tests {
         std::env::temp_dir().join(format!("fenestre-config-{nanos}.lua"))
     }
 
-    #[test]
-    fn parse_config_table_accepts_empty_rules_table() {
+    fn parse_lua_table(lua_source: &str) -> Result<crate::config::Config, ConfigError> {
         let lua = Lua::new();
         let table: mlua::Table = lua
-            .load(
-                r#"
-                return {
-                    rules = {},
-                }
-                "#,
-            )
+            .load(lua_source)
             .call(())
             .expect("lua chunk should return a table");
+        let json = schema::mlua_value_to_json_value(mlua::Value::Table(table))?;
+        let raw: schema::RawConfig = serde_json::from_value(json).map_err(|e| {
+            let msg = e.to_string();
+            let msg = msg.split(" at line ").next().unwrap_or(&msg).trim_end();
+            ConfigError::InvalidConfig(msg.to_string())
+        })?;
+        schema::build_config(raw)
+    }
 
-        let config = parse_config_table(table).expect("config should parse");
+    #[test]
+    fn parse_config_table_accepts_empty_rules_table() {
+        let config = parse_lua_table(
+            r#"
+            return {
+                rules = {},
+            }
+            "#,
+        )
+        .expect("config should parse");
 
         assert!(config.rules.is_empty());
     }
 
     #[test]
     fn parse_config_table_parses_valid_rules() {
-        let lua = Lua::new();
-        let table: mlua::Table = lua
-            .load(
-                r#"
-                return {
-                    rules = {
-                        {
-                            app_id = "foot",
-                            mode = "floating",
-                        },
+        let config = parse_lua_table(
+            r#"
+            return {
+                rules = {
+                    {
+                        app_id = "foot",
+                        mode = "floating",
                     },
-                }
-                "#,
-            )
-            .call(())
-            .expect("lua chunk should return a table");
-
-        let config = parse_config_table(table).expect("config should parse");
+                },
+            }
+            "#,
+        )
+        .expect("config should parse");
 
         assert_eq!(config.rules.len(), 1);
         assert!(matches!(
@@ -338,24 +135,19 @@ mod tests {
 
     #[test]
     fn parse_config_table_parses_rule_prefix() {
-        let lua = Lua::new();
-        let table: mlua::Table = lua
-            .load(
-                r#"
-                return {
-                    rules = {
-                        {
-                            app_id = { value = "mate-", match = "prefix" },
-                            mode = "floating",
-                        },
+        let config = parse_lua_table(
+            r#"
+            return {
+                rules = {
+                    {
+                        app_id = { value = "mate-", match = "prefix" },
+                        mode = "floating",
                     },
-                }
-                "#,
-            )
-            .call(())
-            .expect("lua chunk should return a table");
-
-        let config = parse_config_table(table).expect("config should parse");
+                },
+            }
+            "#,
+        )
+        .expect("config should parse");
 
         assert!(matches!(
             config.rules[0].app_id,
@@ -364,107 +156,22 @@ mod tests {
     }
 
     #[test]
-    fn parse_config_table_rejects_invalid_rule_mode() {
-        let lua = Lua::new();
-        let table: mlua::Table = lua
-            .load(
-                r#"
-                return {
-                    rules = {
-                        {
-                            app_id = "foot",
-                            mode = "invalid",
-                        },
-                    },
-                }
-                "#,
-            )
-            .call(())
-            .expect("lua chunk should return a table");
-
-        let error = parse_config_table(table).expect_err("config should fail");
-
-        assert!(matches!(
-            error,
-            ConfigError::InvalidConfig(message) if message == "Invalid rule mode"
-        ));
-    }
-
-    #[test]
-    fn parse_config_table_rejects_empty_rule() {
-        let lua = Lua::new();
-        let table: mlua::Table = lua
-            .load(
-                r#"
-                return {
-                    rules = {
-                        {
-                            mode = "floating",
-                        },
-                    },
-                }
-                "#,
-            )
-            .call(())
-            .expect("lua chunk should return a table");
-
-        let error = parse_config_table(table).expect_err("config should fail");
-
-        assert!(matches!(
-            error,
-            ConfigError::InvalidConfig(message) if message == "Rule must match at least one of app_id or title"
-        ));
-    }
-
-    #[test]
-    fn parse_config_table_rejects_non_string_match_mode() {
-        let lua = Lua::new();
-        let table: mlua::Table = lua
-            .load(
-                r#"
-                return {
-                    rules = {
-                        {
-                            app_id = { value = "foot", match = 123 },
-                            mode = "floating",
-                        },
-                    },
-                }
-                "#,
-            )
-            .call(())
-            .expect("lua chunk should return a table");
-
-        let error = parse_config_table(table).expect_err("config should fail");
-
-        assert!(matches!(
-            error,
-            ConfigError::InvalidConfig(message) if message == "Expected match to be a string"
-        ));
-    }
-
-    #[test]
     fn parse_config_table_parses_rule_regex_and_rect() {
-        let lua = Lua::new();
-        let table: mlua::Table = lua
-            .load(
-                r#"
-                return {
-                    rules = {
-                        {
-                            app_id = { value = "^foot.*", match = "regex" },
-                            title = { value = "terminal$", match = "regex" },
-                            mode = "fullscreen",
-                            floating_rect = { x = 10, y = 20, width = 800, height = 600 },
-                        },
+        let config = parse_lua_table(
+            r#"
+            return {
+                rules = {
+                    {
+                        app_id = { value = "^foot.*", match = "regex" },
+                        title = { value = "terminal$", match = "regex" },
+                        mode = "fullscreen",
+                        floating_rect = { x = 10, y = 20, width = 800, height = 600 },
                     },
-                }
-                "#,
-            )
-            .call(())
-            .expect("lua chunk should return a table");
-
-        let config = parse_config_table(table).expect("config should parse");
+                },
+            }
+            "#,
+        )
+        .expect("config should parse");
 
         let rule = &config.rules[0];
         assert!(matches!(
@@ -488,77 +195,41 @@ mod tests {
     }
 
     #[test]
-    fn parse_config_table_missing_keybindings_returns_empty_config() {
-        let lua = Lua::new();
-        let table = lua.create_table().expect("table should be created");
-
-        let config = parse_config_table(table).expect("config should parse");
-
-        assert!(config.keybindings.is_empty());
-    }
-
-    #[test]
     fn parse_config_table_accepts_empty_keybindings_table() {
-        let lua = Lua::new();
-        let table: mlua::Table = lua
-            .load(
-                r#"
-                return {
-                    keybindings = {},
-                }
-                "#,
-            )
-            .call(())
-            .expect("lua chunk should return a table");
-
-        let config = parse_config_table(table).expect("config should parse");
+        let config = parse_lua_table(
+            r#"
+            return {
+                keybindings = {},
+            }
+            "#,
+        )
+        .expect("config should parse");
 
         assert!(config.keybindings.is_empty());
-    }
-
-    #[test]
-    fn parse_config_table_rejects_non_table_keybindings() {
-        let lua = Lua::new();
-        let table = lua.create_table().expect("table should be created");
-        table
-            .set("keybindings", false)
-            .expect("keybindings value should be set");
-
-        let error = parse_config_table(table).expect_err("config should fail");
-
-        assert!(matches!(
-            error,
-            ConfigError::InvalidConfig(message) if message == "Expected keybindings to be a table"
-        ));
     }
 
     #[test]
     fn parse_config_table_parses_valid_keybindings() {
-        let lua = Lua::new();
-        let table: mlua::Table = lua
-            .load(
-                r#"
-                return {
-                    keybindings = {
-                        {
-                            keysym = "q",
-                            modifiers = "super",
-                            command = "close",
-                        },
-                        {
-                            target = "all",
-                            keysym = "Return",
-                            modifiers = { "super" },
-                            command = { "spawn", "foot" },
-                        },
+        let config = parse_lua_table(
+            r#"
+            return {
+                keybindings = {
+                    {
+                        keysym = "q",
+                        modifiers = "super",
+                        command = "close",
                     },
-                }
-                "#,
-            )
-            .call(())
-            .expect("lua chunk should return a table");
-
-        let config = parse_config_table(table).expect("config should parse");
+                    {
+                        target = "all",
+                        keysym = "Return",
+                        modifiers = { "super" },
+                        command = { "spawn", "foot" },
+                    },
+                },
+            }
+            "#,
+        )
+        .expect("config should parse");
 
         assert_eq!(config.keybindings.len(), 2);
         assert_binding(
@@ -586,30 +257,25 @@ mod tests {
 
     #[test]
     fn parse_config_table_parses_move_commands() {
-        let lua = Lua::new();
-        let table: mlua::Table = lua
-            .load(
-                r#"
-                return {
-                    keybindings = {
-                        {
-                            keysym = "h",
-                            modifiers = { "super", "shift" },
-                            command = "move_left",
-                        },
-                        {
-                            keysym = "l",
-                            modifiers = { "super", "shift" },
-                            command = "move_right",
-                        },
+        let config = parse_lua_table(
+            r#"
+            return {
+                keybindings = {
+                    {
+                        keysym = "h",
+                        modifiers = { "super", "shift" },
+                        command = "move_left",
                     },
-                }
-                "#,
-            )
-            .call(())
-            .expect("lua chunk should return a table");
-
-        let config = parse_config_table(table).expect("config should parse");
+                    {
+                        keysym = "l",
+                        modifiers = { "super", "shift" },
+                        command = "move_right",
+                    },
+                },
+            }
+            "#,
+        )
+        .expect("config should parse");
 
         assert_eq!(config.keybindings.len(), 2);
         assert_binding(
@@ -634,65 +300,24 @@ mod tests {
 
     #[test]
     fn parse_config_table_rejects_invalid_keybinding() {
-        let lua = Lua::new();
-        let table: mlua::Table = lua
-            .load(
-                r#"
-                return {
-                    keybindings = {
-                        {
-                            keysym = "Return",
-                            modifiers = { "super" },
-                            command = { "invalid" },
-                        },
+        let error = parse_lua_table(
+            r#"
+            return {
+                keybindings = {
+                    {
+                        keysym = "Return",
+                        modifiers = { "super" },
+                        command = { "invalid" },
                     },
-                }
-                "#,
-            )
-            .call(())
-            .expect("lua chunk should return a table");
-
-        let error = parse_config_table(table).expect_err("config should fail");
+                },
+            }
+            "#,
+        )
+        .expect_err("config should fail");
 
         assert!(matches!(
             error,
             ConfigError::InvalidConfig(message) if message == "Invalid keybinding"
-        ));
-    }
-
-    #[test]
-    fn parse_string_list_accepts_string() {
-        let lua = Lua::new();
-        let value = Value::String(
-            lua.create_string("close")
-                .expect("string should be created"),
-        );
-
-        let values = parse_string_list(value).expect("string list should parse");
-
-        assert_eq!(values, vec!["close"]);
-    }
-
-    #[test]
-    fn parse_string_list_accepts_string_array() {
-        let lua = Lua::new();
-        let table: mlua::Table = lua
-            .load(r#"return { "spawn", "foot" }"#)
-            .call(())
-            .expect("lua chunk should return a table");
-
-        let values = parse_string_list(Value::Table(table)).expect("string list should parse");
-
-        assert_eq!(values, vec!["spawn", "foot"]);
-    }
-
-    #[test]
-    fn parse_string_list_rejects_non_string_values() {
-        let error = parse_string_list(Value::Nil).expect_err("string list should fail");
-
-        assert!(matches!(
-            error,
-            ConfigError::InvalidConfig(message) if message == "Expected string or array of strings"
         ));
     }
 
@@ -715,7 +340,7 @@ mod tests {
         )
         .expect("temp config should be written");
 
-        let config = super::load_from_lua(&path).expect("lua config should load");
+        let config = load_from_lua(&path).expect("lua config should load");
 
         let _ = fs::remove_file(&path);
 
