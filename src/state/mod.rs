@@ -14,6 +14,7 @@ mod handlers;
 mod keybindings;
 mod output;
 pub mod rule;
+mod scene;
 mod seat;
 mod window;
 mod wm;

@@ -11,7 +11,8 @@ the larger refactor roadmap lives in `refactor-plan.md`.
 
 - Owns **all** mutable compositor-facing state: River proxies, windows, outputs, seats,
   keybindings, focus, config, layout, and pending request queues.
-- Defined in `src/state/wm.rs`.
+- Defined in `src/state/wm.rs`. Scene snapshot types and the manage/render
+  reconciler live in `src/state/scene.rs`.
 - Public crate surface is intentionally tiny: re-exported from `src/state/mod.rs`.
 - Most fields are `pub(super)` to keep the `state` module boundary strict.
 - Maintains three `HashMap` proxy indexes (`windows_by_proxy`, `outputs_by_proxy`, `seats_by_proxy`) for O(1) lookup of Wayland objects, plus a per-output window grouping index `windows_by_output` (`HashMap<OutputId, HashSet<WindowId>>`) for O(1) lookup of which windows belong to an output.
@@ -49,7 +50,7 @@ The domain boundary types are:
 
 - `desired_scene(&self) -> SceneSnapshot` is a **pure, read-only** function of
   current state. It snapshots every window's intended `rect`, `state`, `z`
-  priority, and `border` appearance as a `SceneEntry` (`src/state/wm.rs`).
+  priority, and `border` appearance as a `SceneEntry` (`src/state/scene.rs`).
 - Each protocol phase keeps its **own** snapshot and diffs the fresh
   `desired_scene()` against it, emitting only the `Effect`s that changed:
   - `last_manage_scene` — diffed/updated by `apply_manage` (dimensions,
@@ -247,7 +248,7 @@ flowchart TD
 
 ## Important Invariants
 
-1. **Hexagonal boundary**: `state/wm.rs` + `layout/` are the pure core — no
+1. **Hexagonal boundary**: `state/wm.rs`, `state/scene.rs`, and `layout/` are the pure core — no
    `protocol::` imports, no River calls (compiler-enforced). `state/adapter.rs` is
    the **only** `state/` module that issues River protocol calls; it applies
    `Effect`s returned by the core. `state/handlers.rs` is a thin translator

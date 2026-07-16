@@ -17,7 +17,7 @@ effects or issuing redundant calls.
 
 - `desired_scene(&self) -> SceneSnapshot` is a **pure, read-only** function of
   current state. It snapshots every window's intended `rect`, `state`, `z`
-  priority, and `border` appearance as a `SceneEntry` (`src/state/wm.rs`).
+  priority, and `border` appearance as a `SceneEntry` (`src/state/scene.rs`).
 - Each protocol phase keeps its **own** snapshot and diffs the fresh
   `desired_scene()` against it, emitting only the `Effect`s that changed:
   - `last_manage_scene` — diffed/updated by `apply_manage` (dimensions,
