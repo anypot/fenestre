@@ -20,5 +20,4 @@ mod seat;
 mod window;
 mod wm;
 
-pub(crate) use output::OutputId;
 pub(crate) use wm::WMState;

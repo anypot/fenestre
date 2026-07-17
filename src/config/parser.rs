@@ -219,6 +219,10 @@ fn parse_command(tokens: &[&str]) -> Option<Command> {
         "resize_shrink_down" => Some(Command::ResizeShrink {
             direction: crate::layout::FocusDirection::Down,
         }),
+        "focus_output_left" => Some(Command::FocusOutputLeft),
+        "focus_output_right" => Some(Command::FocusOutputRight),
+        "focus_output_up" => Some(Command::FocusOutputUp),
+        "focus_output_down" => Some(Command::FocusOutputDown),
         _ => None,
     }
 }
@@ -652,6 +656,26 @@ mod tests {
             Some(Command::ResizeShrink {
                 direction: crate::layout::FocusDirection::Down,
             })
+        );
+    }
+
+    #[test]
+    fn parses_focus_output_directions() {
+        assert_eq!(
+            parse_command(&["focus_output_left"]),
+            Some(Command::FocusOutputLeft)
+        );
+        assert_eq!(
+            parse_command(&["focus_output_right"]),
+            Some(Command::FocusOutputRight)
+        );
+        assert_eq!(
+            parse_command(&["focus_output_up"]),
+            Some(Command::FocusOutputUp)
+        );
+        assert_eq!(
+            parse_command(&["focus_output_down"]),
+            Some(Command::FocusOutputDown)
         );
     }
 
