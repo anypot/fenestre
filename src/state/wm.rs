@@ -567,7 +567,7 @@ impl WMState {
                 // `Exclusive` and `apply_manage` clears `pending_focus` before they
                 // are emitted, so re-queue the current focus here so it is actually
                 // re-applied instead of staying desynced from River.
-                if mode == super::seat::LayerShellFocus::None
+                if mode == crate::state::seat::LayerShellFocus::None
                     && let Some(window_id) = self.focused_window
                 {
                     self.pending_focus = Some(window_id);
@@ -748,6 +748,774 @@ mod tests {
         assert_eq!(
             window_rect.width, pseudo.width,
             "pseudo toggled from fullscreen reused stale fullscreen dimensions"
+        );
+    }
+
+    // --- `handle_event` routing tests -------------------------------------
+    //
+    // These exercise the match arms in `WMState::handle_event` end to end,
+    // feeding `Event` variants through the real dispatch path instead of
+    // calling the underlying methods directly. They catch bugs where a match
+    // arm forgets to invoke a side effect (e.g. `AppIdUpdated` not calling
+    // `evaluate_window_rules`).
+
+    /// Build a minimal `WMState` with one output (real geometry) and one
+    /// floating window-rule keyed on an exact app_id. The output geometry is
+    /// set so `Output::rect` is non-`None`, which `evaluate_window_rules`
+    /// requires before it will run rules.
+    fn setup_handle_event_fixture() -> (WMState, OutputId, WindowId) {
+        let mut state = WMState::new();
+        let o = OutputId(1);
+        let mut out = Output::new(o);
+        out.set_dimensions(1920, 1080);
+        state.outputs.insert(o, out);
+        state.focused_output = Some(o);
+
+        // A rule that floats only when BOTH the exact app_id "floatme" and the
+        // exact title "pinned" are present. Requiring the title keeps a window
+        // in the pending-metadata state after its app_id arrives, which is what
+        // lets `OutputDimensionsUpdated`'s re-evaluation branch be observable.
+        let rules = crate::state::rule::WindowRules::new(vec![crate::config::WindowRule {
+            app_id: Some(crate::config::RulePattern::exact("floatme")),
+            title: Some(crate::config::RulePattern::exact("pinned")),
+            target: crate::layout::WindowState::Floating {
+                rect: crate::layout::Rect::new(0, 0, 0, 0),
+            },
+            floating_rect: None,
+        }]);
+        state.window_rules = Some(rules);
+
+        let w = WindowId(1);
+        (state, o, w)
+    }
+
+    #[test]
+    fn event_window_created_registers_window_tree_and_focus() {
+        let (mut state, o, w) = setup_handle_event_fixture();
+
+        state.handle_event(Event::WindowCreated {
+            window_id: w,
+            target_output: o,
+        });
+
+        // Window exists and is indexed to the output.
+        assert!(state.windows.contains_key(&w), "window not registered");
+        assert_eq!(
+            state.windows_for_output(o).map(|s| s.contains(&w)),
+            Some(true),
+            "window not indexed under its output"
+        );
+        // It is in the output's layout tree.
+        assert!(
+            state
+                .tree_for_output(o)
+                .unwrap()
+                .visible_windows()
+                .contains(&w.0),
+            "window missing from layout tree"
+        );
+        // It became the focused window and is queued for River focus.
+        assert_eq!(state.focused_window, Some(w), "created window not focused");
+        assert_eq!(state.pending_focus, Some(w), "focus not queued for manage");
+        assert_eq!(state.focused_output, Some(o));
+    }
+
+    #[test]
+    fn event_window_closed_reconciles_focus() {
+        let (mut state, o, a) = setup_handle_event_fixture();
+        let b = WindowId(2);
+
+        // Spawn A then B on the same output; B is globally focused last.
+        state.handle_event(Event::WindowCreated {
+            window_id: a,
+            target_output: o,
+        });
+        state.handle_event(Event::WindowCreated {
+            window_id: b,
+            target_output: o,
+        });
+        assert_eq!(state.focused_window, Some(b));
+
+        // Close the globally focused window B; focus must move to A (same
+        // output's tree choice), not drop focus or jump elsewhere.
+        state.handle_event(Event::WindowClosed { window_id: b });
+
+        assert!(
+            !state.windows.contains_key(&b),
+            "closed window still present"
+        );
+        assert!(
+            state.windows_for_output(o).map(|s| s.contains(&b)) == Some(false),
+            "closed window still indexed under its output"
+        );
+        assert_eq!(state.focused_window, Some(a), "focus not moved to A");
+        assert_eq!(
+            state.focused_tree().unwrap().focused_window(),
+            Some(a.0),
+            "layout focus diverged from global focus after close"
+        );
+        assert_eq!(state.pending_focus, Some(a), "focus not re-queued");
+    }
+
+    #[test]
+    fn event_app_id_updated_evaluates_rules() {
+        let (mut state, o, w) = setup_handle_event_fixture();
+
+        // Create the window; no metadata yet, so the float rule cannot match.
+        state.handle_event(Event::WindowCreated {
+            window_id: w,
+            target_output: o,
+        });
+        assert_eq!(
+            state.window_state_for_id(w),
+            Some(&crate::layout::WindowState::Tiled),
+            "window should start tiled before app_id arrives"
+        );
+
+        // Deliver the matching app_id. The rule also requires a title, so the
+        // window stays in the pending-metadata state: routing must still call
+        // `evaluate_window_rules` (storing the app_id) without floating yet.
+        state.handle_event(Event::AppIdUpdated {
+            window_id: w,
+            app_id: Some("floatme".to_string()),
+        });
+
+        assert_eq!(
+            state.windows.get(&w).unwrap().app_id.as_deref(),
+            Some("floatme"),
+            "app_id not stored"
+        );
+        assert_eq!(
+            state.window_state_for_id(w),
+            Some(&crate::layout::WindowState::Tiled),
+            "AppIdUpdated must not float before the title arrives"
+        );
+
+        // Deliver the matching title: the rule now applies and the window floats.
+        state.handle_event(Event::TitleUpdated {
+            window_id: w,
+            title: Some("pinned".to_string()),
+        });
+
+        assert_eq!(
+            state.windows.get(&w).unwrap().title.as_deref(),
+            Some("pinned"),
+            "title not stored"
+        );
+        assert_eq!(
+            state.window_state_for_id(w),
+            Some(&crate::layout::WindowState::Floating {
+                rect: crate::layout::Rect::new(480, 270, 960, 540)
+            }),
+            "TitleUpdated did not evaluate window rules"
+        );
+    }
+
+    #[test]
+    fn event_output_dimensions_updated_re_evaluates_window_rules() {
+        let (mut state, o, w) = setup_handle_event_fixture();
+
+        // Create the window and deliver the matching app_id. The rule also
+        // requires a title, so the window is still pending metadata and the
+        // float has NOT been applied yet.
+        state.handle_event(Event::WindowCreated {
+            window_id: w,
+            target_output: o,
+        });
+        state.handle_event(Event::AppIdUpdated {
+            window_id: w,
+            app_id: Some("floatme".to_string()),
+        });
+        assert_eq!(
+            state.window_state_for_id(w),
+            Some(&crate::layout::WindowState::Tiled),
+            "precondition: window still tiled (title pending)"
+        );
+
+        // Resizing the output must re-run rules for that output's windows. With
+        // the title still missing, the re-evaluation correctly keeps the window
+        // deferred (not floated, not finalized) rather than skipping or
+        // finalizing early.
+        state.handle_event(Event::OutputDimensionsUpdated {
+            output_id: o,
+            w: 2560,
+            h: 1440,
+        });
+
+        assert_eq!(
+            state.outputs.get(&o).unwrap().rect(),
+            Some(crate::layout::Rect::new(0, 0, 2560, 1440)),
+            "output dimensions not updated by event"
+        );
+        assert_eq!(
+            state.window_state_for_id(w),
+            Some(&crate::layout::WindowState::Tiled),
+            "resize re-evaluation must not float before the title arrives"
+        );
+
+        // Now the title arrives: the (re-evaluated) rule applies and the window
+        // floats at the NEW output geometry, proving the resize re-ran the rules
+        // against the updated output rect.
+        state.handle_event(Event::TitleUpdated {
+            window_id: w,
+            title: Some("pinned".to_string()),
+        });
+        assert_eq!(
+            state.window_state_for_id(w),
+            Some(&crate::layout::WindowState::Floating {
+                rect: crate::layout::Rect::new(640, 360, 1280, 720)
+            }),
+            "OutputDimensionsUpdated did not re-evaluate window rules"
+        );
+    }
+
+    /// Build a `WMState` with one output (real geometry) holding one window, so
+    /// fullscreen toggle events have a window to act on.
+    fn setup_fullscreen_fixture() -> (WMState, OutputId, WindowId) {
+        let mut state = WMState::new();
+        let o = OutputId(1);
+        let mut out = Output::new(o);
+        out.set_dimensions(1920, 1080);
+        state.outputs.insert(o, out);
+        state.focused_output = Some(o);
+
+        let w = WindowId(1);
+        state.handle_event(Event::WindowCreated {
+            window_id: w,
+            target_output: o,
+        });
+        (state, o, w)
+    }
+
+    #[test]
+    fn event_output_created_creates_output_and_handles_orphaned_trees() {
+        // Default config binds to the `Primary` seat, so with no seats present
+        // `reconcile_keybindings` produces no runtime bindings. Creating an
+        // output must reconcile keybindings (which, with still no seats, stays
+        // empty) without panicking and keeps bindings consistent.
+        let mut state = WMState::new();
+        assert_eq!(
+            state.keybindings.len(),
+            0,
+            "precondition: no bindings without a seat"
+        );
+
+        state.handle_event(Event::OutputCreated {
+            output_id: OutputId(1),
+        });
+
+        assert!(
+            state.outputs.contains_key(&OutputId(1)),
+            "output not created"
+        );
+        // Still no seats, so no bindings, but reconcile ran cleanly.
+        assert_eq!(state.keybindings.len(), 0);
+    }
+
+    #[test]
+    fn event_output_removed_reassigns_windows_and_falls_back_focus() {
+        let mut state = WMState::new();
+        let o1 = OutputId(1);
+        let o2 = OutputId(2);
+        for (o, x) in [(o1, 0), (o2, 1920)] {
+            let mut out = Output::new(o);
+            out.set_dimensions(1920, 1080);
+            out.set_position(x, 0);
+            state.outputs.insert(o, out);
+        }
+
+        // Two windows: one on the output we will remove (o1), one resident on
+        // o2. `WindowCreated` focuses each new window, so the last created
+        // (`resident` on o2) is the globally focused window.
+        let moving = WindowId(1);
+        let resident = WindowId(2);
+        state.handle_event(Event::WindowCreated {
+            window_id: moving,
+            target_output: o1,
+        });
+        state.handle_event(Event::WindowCreated {
+            window_id: resident,
+            target_output: o2,
+        });
+        assert_eq!(state.focused_output, Some(o2), "precondition: o2 focused");
+        assert_eq!(
+            state.focused_window,
+            Some(resident),
+            "precondition: resident globally focused"
+        );
+
+        // Remove the focused output o1. Its window must be reassigned to o2,
+        // the output map entry dropped, and focus must stay on the surviving
+        // output's window (o2 / resident).
+        state.handle_event(Event::OutputRemoved { output_id: o1 });
+
+        assert!(
+            !state.outputs.contains_key(&o1),
+            "removed output still present"
+        );
+        assert!(
+            !state.windows_for_output(o1).is_some_and(|s| !s.is_empty()),
+            "windows not cleared from removed output index"
+        );
+        // The moved window now lives on the surviving output.
+        assert_eq!(
+            state.windows.get(&moving).unwrap().output_id,
+            o2,
+            "window not reassigned to surviving output"
+        );
+        assert!(
+            state.windows_for_output(o2).map(|s| s.contains(&moving)) == Some(true),
+            "reassigned window not indexed on surviving output"
+        );
+        // Focus stays on the surviving output's resident window.
+        assert_eq!(state.focused_output, Some(o2), "focus did not fall back");
+        assert_eq!(
+            state.focused_window,
+            Some(resident),
+            "focus not handed to surviving output's window"
+        );
+        assert_eq!(
+            state.focused_tree().unwrap().focused_window(),
+            Some(resident.0),
+            "layout focus diverged from global focus after output removal"
+        );
+        // The moved window survived (not destroyed) and is in o2's tree.
+        assert!(
+            state.windows.contains_key(&moving),
+            "reassigned window was destroyed"
+        );
+        assert!(
+            state
+                .tree_for_output(o2)
+                .unwrap()
+                .visible_windows()
+                .contains(&moving.0),
+            "reassigned window missing from surviving output's tree"
+        );
+    }
+
+    #[test]
+    fn event_seat_created_triggers_reconcile_keybindings() {
+        let mut state = WMState::new();
+        assert_eq!(
+            state.keybindings.len(),
+            0,
+            "precondition: no bindings before any seat exists"
+        );
+
+        // Creating the first (primary) seat must reconcile keybindings, which
+        // recreates the default config's Primary-target bindings for that seat.
+        state.handle_event(Event::SeatCreated { seat_id: SeatId(1) });
+
+        assert!(state.seats.contains_key(&SeatId(1)), "seat not created");
+        assert!(
+            !state.keybindings.is_empty(),
+            "SeatCreated did not reconcile bindings"
+        );
+        // Every reconciled binding belongs to the newly created seat.
+        assert!(
+            state.keybindings.values().all(|b| b.seat_id == SeatId(1)),
+            "reconciled bindings assigned to the wrong seat"
+        );
+        assert_eq!(
+            state.current_seat,
+            Some(SeatId(1)),
+            "first seat not current"
+        );
+
+        // A second seat with no Primary bindings should not duplicate the
+        // Primary-target set, but reconcile must still run and keep bindings
+        // consistent (still only seat 1's Primary bindings).
+        state.handle_event(Event::SeatCreated { seat_id: SeatId(2) });
+        assert!(
+            state.keybindings.values().all(|b| b.seat_id == SeatId(1)),
+            "non-primary seat wrongly received bindings"
+        );
+    }
+
+    #[test]
+    fn event_seat_removed_cleans_bindings_and_hands_off_focus() {
+        let mut state = WMState::new();
+
+        // Two seats; both get Primary-target bindings because Primary resolves
+        // to the lowest seat id (seat 1 only), so reconcile yields seat-1
+        // bindings. To exercise per-seat binding cleanup, drive the binding set
+        // through a seat-targeted reconcile: create seat 1, then seat 2.
+        state.handle_event(Event::SeatCreated { seat_id: SeatId(1) });
+        let before = state.keybindings.len();
+        assert!(before > 0, "precondition: bindings exist for seat 1");
+
+        state.handle_event(Event::SeatCreated { seat_id: SeatId(2) });
+
+        // Removing seat 1 (the current seat) must run reconcile again and hand
+        // `current_seat` off to the surviving seat.
+        state.handle_event(Event::SeatRemoved { seat_id: SeatId(1) });
+
+        assert!(!state.seats.contains_key(&SeatId(1)), "seat not removed");
+        assert_eq!(
+            state.current_seat,
+            Some(SeatId(2)),
+            "focus not handed to surviving seat"
+        );
+        // Reconcile recreated only seat 2's (Primary-target) bindings; none
+        // reference the removed seat.
+        assert!(
+            state.keybindings.values().all(|b| b.seat_id == SeatId(2)),
+            "bindings for removed seat were not cleaned up"
+        );
+    }
+
+    #[test]
+    fn event_fullscreen_requested_toggles_window_state() {
+        let (mut state, _o, w) = setup_fullscreen_fixture();
+
+        assert_eq!(
+            state.window_state_for_id(w),
+            Some(&crate::layout::WindowState::Tiled),
+            "precondition: window starts tiled"
+        );
+
+        state.handle_event(Event::FullscreenRequested { window_id: w });
+
+        assert_eq!(
+            state.window_state_for_id(w),
+            Some(&crate::layout::WindowState::Fullscreen {
+                restore: Box::new(crate::layout::WindowState::Tiled)
+            }),
+            "FullscreenRequested did not fullscreen the window"
+        );
+    }
+
+    #[test]
+    fn event_exit_fullscreen_requested_restores_window_state() {
+        let (mut state, _o, w) = setup_fullscreen_fixture();
+
+        // Enter fullscreen (preserving the tiled restore state), then exit.
+        state.handle_event(Event::FullscreenRequested { window_id: w });
+        assert_eq!(
+            state.window_state_for_id(w),
+            Some(&crate::layout::WindowState::Fullscreen {
+                restore: Box::new(crate::layout::WindowState::Tiled)
+            }),
+            "precondition: window is fullscreen"
+        );
+
+        state.handle_event(Event::ExitFullscreenRequested { window_id: w });
+
+        assert_eq!(
+            state.window_state_for_id(w),
+            Some(&crate::layout::WindowState::Tiled),
+            "ExitFullscreenRequested did not restore the window"
+        );
+    }
+
+    /// Build a `WMState` with one output (real geometry) and a single window on
+    /// it, returning `(state, output, window)`.
+    fn setup_window_on_output() -> (WMState, OutputId, WindowId) {
+        let mut state = WMState::new();
+        let o = OutputId(1);
+        let mut out = Output::new(o);
+        out.set_dimensions(1920, 1080);
+        state.outputs.insert(o, out);
+        state.focused_output = Some(o);
+
+        let w = WindowId(1);
+        state.handle_event(Event::WindowCreated {
+            window_id: w,
+            target_output: o,
+        });
+        (state, o, w)
+    }
+
+    #[test]
+    fn event_window_interaction_focuses_clicked_window() {
+        let mut state = WMState::new();
+        let o = OutputId(1);
+        let mut out = Output::new(o);
+        out.set_dimensions(1920, 1080);
+        state.outputs.insert(o, out);
+        state.focused_output = Some(o);
+
+        // Two windows; the last created (b) is globally focused.
+        let a = WindowId(1);
+        let b = WindowId(2);
+        state.handle_event(Event::WindowCreated {
+            window_id: a,
+            target_output: o,
+        });
+        state.handle_event(Event::WindowCreated {
+            window_id: b,
+            target_output: o,
+        });
+        assert_eq!(state.focused_window, Some(b), "precondition: b focused");
+
+        // Clicking a (which is not focused) must move focus to it across both
+        // the global focus state and the layout tree.
+        state.handle_event(Event::WindowInteraction { window_id: a });
+
+        assert_eq!(state.focused_window, Some(a), "interaction did not focus a");
+        assert_eq!(
+            state.focused_tree().unwrap().focused_window(),
+            Some(a.0),
+            "layout focus diverged from global focus after interaction"
+        );
+        assert_eq!(state.pending_focus, Some(a), "focus not queued for manage");
+        assert_eq!(state.focus_stack.first().copied(), Some(a));
+    }
+
+    #[test]
+    fn event_decoration_hint_updated_sets_csd_ssd() {
+        let (mut state, _o, w) = setup_window_on_output();
+
+        assert_eq!(
+            state.windows.get(&w).unwrap().decoration_hint,
+            None,
+            "precondition: no decoration hint yet"
+        );
+
+        // Hint 1 => client-side decorations.
+        state.handle_event(Event::DecorationHintUpdated {
+            window_id: w,
+            hint: 1,
+        });
+        assert_eq!(
+            state.windows.get(&w).unwrap().decoration_hint,
+            Some(1),
+            "decoration hint not stored"
+        );
+        assert!(
+            state.windows.get(&w).unwrap().use_client_decorations(false),
+            "hint 1 should prefer client-side decorations"
+        );
+
+        // Hint 0 => server-side decorations (overrides the false fallback).
+        state.handle_event(Event::DecorationHintUpdated {
+            window_id: w,
+            hint: 0,
+        });
+        assert_eq!(
+            state.windows.get(&w).unwrap().decoration_hint,
+            Some(0),
+            "decoration hint not updated"
+        );
+        assert!(
+            !state.windows.get(&w).unwrap().use_client_decorations(true),
+            "hint 0 should prefer server-side decorations"
+        );
+    }
+
+    #[test]
+    fn event_dimensions_hint_updated_records_preferred_size() {
+        let (mut state, o, w) = setup_window_on_output();
+
+        // No hint yet: preferred size is the ratio base.
+        let out_rect = state.outputs.get(&o).unwrap().rect().unwrap();
+        let (base_w, _base_h) = state
+            .windows
+            .get(&w)
+            .unwrap()
+            .preferred_dimensions(out_rect, state.default_float_ratio());
+        assert_eq!(base_w, 960, "precondition: default size is ratio base");
+
+        // Deliver a min-width/height hint; the event must store it and the
+        // preferred size must clamp up to the hints (never shrink below the
+        // ratio base).
+        state.handle_event(Event::DimensionsHint {
+            window_id: w,
+            min_w: 1200,
+            min_h: 700,
+            max_w: 0,
+            max_h: 0,
+        });
+
+        let hint = &state.windows.get(&w).unwrap().dimensions_hint;
+        assert_eq!(
+            (
+                hint.min_width,
+                hint.min_height,
+                hint.max_width,
+                hint.max_height
+            ),
+            (1200, 700, 0, 0),
+            "dimensions hint not stored"
+        );
+        let (w_w, w_h) = state
+            .windows
+            .get(&w)
+            .unwrap()
+            .preferred_dimensions(out_rect, state.default_float_ratio());
+        assert_eq!(
+            (w_w, w_h),
+            (1200, 700),
+            "DimensionsHint did not influence preferred size"
+        );
+    }
+
+    #[test]
+    fn event_pid_updated_stores_process_id() {
+        let (mut state, _o, w) = setup_window_on_output();
+
+        assert_eq!(state.windows.get(&w).unwrap().pid, 0, "precondition: pid 0");
+        state.handle_event(Event::PidUpdated {
+            window_id: w,
+            pid: 4242,
+        });
+        assert_eq!(
+            state.windows.get(&w).unwrap().pid,
+            4242,
+            "PidUpdated did not store the pid"
+        );
+    }
+
+    #[test]
+    fn event_seat_name_updated_stores_name() {
+        let mut state = WMState::new();
+        state.handle_event(Event::SeatCreated { seat_id: SeatId(1) });
+        assert_eq!(
+            state.seats.get(&SeatId(1)).unwrap().wl_seat_name,
+            0,
+            "precondition: seat name 0"
+        );
+
+        state.handle_event(Event::SeatNameUpdated {
+            seat_id: SeatId(1),
+            name: 7,
+        });
+        assert_eq!(
+            state.seats.get(&SeatId(1)).unwrap().wl_seat_name,
+            7,
+            "SeatNameUpdated did not store the name"
+        );
+    }
+
+    #[test]
+    fn event_seat_pointer_position_updated_stores_cursor() {
+        let mut state = WMState::new();
+        state.handle_event(Event::SeatCreated { seat_id: SeatId(1) });
+        assert_eq!(
+            state.seats.get(&SeatId(1)).unwrap().pointer_position,
+            None,
+            "precondition: no pointer position"
+        );
+
+        state.handle_event(Event::SeatPointerPositionUpdated {
+            seat_id: SeatId(1),
+            x: 123,
+            y: 456,
+        });
+        assert_eq!(
+            state.seats.get(&SeatId(1)).unwrap().pointer_position,
+            Some((123, 456)),
+            "SeatPointerPositionUpdated did not store the cursor position"
+        );
+    }
+
+    #[test]
+    fn event_output_position_updated_moves_output_and_reassigns() {
+        let mut state = WMState::new();
+        let o1 = OutputId(1);
+        let o2 = OutputId(2);
+        for (o, x) in [(o1, 0), (o2, 1920)] {
+            let mut out = Output::new(o);
+            out.set_dimensions(1920, 1080);
+            out.set_position(x, 0);
+            state.outputs.insert(o, out);
+        }
+        state.focused_output = Some(o1);
+
+        // A window on o1, floated so its absolute position is meaningful.
+        let w = WindowId(1);
+        state.handle_event(Event::WindowCreated {
+            window_id: w,
+            target_output: o1,
+        });
+        state.tree_for_output(o1).unwrap().set_window_state(
+            w.0,
+            crate::layout::WindowState::Floating {
+                rect: crate::layout::Rect::new(100, 50, 300, 200),
+            },
+        );
+
+        // Move o1 by (+500, +40). The output position must update and the window
+        // must stay on o1 with its floating rect preserved.
+        state.handle_event(Event::OutputPositionUpdated {
+            output_id: o1,
+            x: 500,
+            y: 40,
+        });
+
+        assert_eq!(
+            state.outputs.get(&o1).unwrap().position,
+            Some((500, 40)),
+            "output position not updated"
+        );
+        assert_eq!(
+            state.windows.get(&w).unwrap().output_id,
+            o1,
+            "window must stay on its output after position update"
+        );
+        // The floating rect keeps its window-local coordinates since the
+        // window stayed on the same output.
+        assert_eq!(
+            state.window_state_for_id(w),
+            Some(&crate::layout::WindowState::Floating {
+                rect: crate::layout::Rect::new(100, 50, 300, 200)
+            }),
+            "floating rect not preserved across output position update"
+        );
+    }
+
+    #[test]
+    fn event_seat_layer_shell_focus_updates_mode_and_requeues_focus() {
+        let mut state = WMState::new();
+        state.handle_event(Event::SeatCreated { seat_id: SeatId(1) });
+
+        // A focused window on an output so the None-mode requeue branch is
+        // observable.
+        let o1 = OutputId(1);
+        let mut out = Output::new(o1);
+        out.set_dimensions(1920, 1080);
+        state.outputs.insert(o1, out);
+        state.focused_output = Some(o1);
+        let w = WindowId(1);
+        state.handle_event(Event::WindowCreated {
+            window_id: w,
+            target_output: o1,
+        });
+        assert_eq!(
+            state.focused_window,
+            Some(w),
+            "precondition: window focused"
+        );
+
+        // Exclusive mode: only the seat's layer-shell focus mode is stored; no
+        // re-queue of pending focus.
+        state.handle_event(Event::SeatLayerShellFocus {
+            seat_id: SeatId(1),
+            mode: crate::state::seat::LayerShellFocus::Exclusive,
+        });
+        assert_eq!(
+            state.seats.get(&SeatId(1)).unwrap().layer_shell_focus,
+            crate::state::seat::LayerShellFocus::Exclusive,
+            "layer-shell focus mode not stored"
+        );
+
+        // Clear pending focus, then switch to None: River handed focus back to
+        // the WM, so the current focus must be re-queued.
+        state.pending_focus = None;
+        state.handle_event(Event::SeatLayerShellFocus {
+            seat_id: SeatId(1),
+            mode: crate::state::seat::LayerShellFocus::None,
+        });
+        assert_eq!(
+            state.seats.get(&SeatId(1)).unwrap().layer_shell_focus,
+            crate::state::seat::LayerShellFocus::None,
+            "layer-shell focus mode not cleared"
+        );
+        assert_eq!(
+            state.pending_focus,
+            Some(w),
+            "None mode did not re-queue the current focus"
         );
     }
 }
