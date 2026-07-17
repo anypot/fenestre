@@ -242,8 +242,8 @@ mod tests {
         let mut state = WMState::new();
         let o1 = OutputId(1);
         let o2 = OutputId(2);
-        state.outputs.insert(o1, Output::new(o1));
-        state.outputs.insert(o2, Output::new(o2));
+        state.outputs.insert(o1, Output::new());
+        state.outputs.insert(o2, Output::new());
 
         let w1 = WindowId(1);
         state.windows.insert(w1, Window::new(w1, o1));
@@ -271,7 +271,7 @@ mod tests {
         let o2 = OutputId(2);
         let o3 = OutputId(3);
         for (o, x) in [(o1, 0), (o2, 1920), (o3, 3840)] {
-            let mut out = Output::new(o);
+            let mut out = Output::new();
             out.set_dimensions(1920, 1080);
             out.set_position(x, 0);
             state.outputs.insert(o, out);
@@ -326,8 +326,8 @@ mod tests {
         let mut state = WMState::new();
         let o1 = OutputId(1);
         let o2 = OutputId(2);
-        state.outputs.insert(o1, Output::new(o1));
-        state.outputs.insert(o2, Output::new(o2));
+        state.outputs.insert(o1, Output::new());
+        state.outputs.insert(o2, Output::new());
 
         let w1 = WindowId(1);
         state.windows.insert(w1, Window::new(w1, o1));
@@ -348,8 +348,8 @@ mod tests {
         let mut state = WMState::new();
         let o1 = OutputId(1);
         let o2 = OutputId(2);
-        state.outputs.insert(o1, Output::new(o1));
-        state.outputs.insert(o2, Output::new(o2));
+        state.outputs.insert(o1, Output::new());
+        state.outputs.insert(o2, Output::new());
         state.focused_output = Some(o1);
 
         let w1 = WindowId(1);
@@ -393,7 +393,7 @@ mod tests {
         let o1 = OutputId(1);
         let o2 = OutputId(2);
         for (o, w, h) in [(o1, 100, 1000), (o2, 1000, 100)] {
-            let mut out = Output::new(o);
+            let mut out = Output::new();
             out.set_dimensions(w, h);
             state.outputs.insert(o, out);
         }
@@ -446,7 +446,7 @@ mod tests {
         let o2 = OutputId(2);
 
         // Source: a tall output so the first split is Horizontal (windows stacked).
-        let mut out1 = Output::new(o1);
+        let mut out1 = Output::new();
         out1.set_dimensions(100, 1000);
         state.outputs.insert(o1, out1);
 
@@ -462,7 +462,7 @@ mod tests {
         // Simulate output removal (orphan tree kept) then a recreate of o2
         // without dimensions yet.
         state.outputs.remove(&o1);
-        state.outputs.insert(o2, Output::new(o2));
+        state.outputs.insert(o2, Output::new());
 
         state.reassign_output(o1, o2);
 
@@ -497,7 +497,7 @@ mod tests {
         let o1 = OutputId(1);
         let o2 = OutputId(2);
         for (o, w, h) in [(o1, 1920, 1080), (o2, 1920, 1080)] {
-            let mut out = Output::new(o);
+            let mut out = Output::new();
             out.set_dimensions(w, h);
             state.outputs.insert(o, out);
         }
@@ -584,7 +584,7 @@ mod tests {
         let o1 = OutputId(1);
         let o2 = OutputId(2);
         for (o, w, h) in [(o1, 1920, 1080), (o2, 1920, 1080)] {
-            let mut out = Output::new(o);
+            let mut out = Output::new();
             out.set_dimensions(w, h);
             state.outputs.insert(o, out);
         }
@@ -631,7 +631,7 @@ mod tests {
         let o1 = OutputId(1);
         let o2 = OutputId(2);
         for (o, w, h) in [(o1, 1920, 1080), (o2, 1920, 1080)] {
-            let mut out = Output::new(o);
+            let mut out = Output::new();
             out.set_dimensions(w, h);
             state.outputs.insert(o, out);
         }
@@ -684,7 +684,7 @@ mod tests {
         let o2 = OutputId(2);
 
         // Source at the origin with a real floating window.
-        let mut out1 = Output::new(o1);
+        let mut out1 = Output::new();
         out1.set_dimensions(1920, 1080);
         out1.set_position(0, 0);
         state.outputs.insert(o1, out1);
@@ -698,7 +698,7 @@ mod tests {
         state.push_focus(floating);
 
         // Recreate o2 at a different position, geometry not yet known.
-        let mut out2 = Output::new(o2);
+        let mut out2 = Output::new();
         out2.set_position(1920, 0);
         state.outputs.insert(o2, out2);
 

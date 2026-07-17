@@ -7,7 +7,6 @@ use crate::state::OutputId;
 
 /// Internal action triggered by a keybinding or future command source.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum Command {
     /// Move focus to the next window.
     FocusNext,
@@ -27,9 +26,13 @@ pub(crate) enum Command {
     /// Move focus right.
     FocusRight,
 
+    /// Choose a split direction is planned.
+    #[allow(dead_code)]
     /// Split the focused container vertically.
     SplitVertical,
 
+    /// Choose a split direction is planned.
+    #[allow(dead_code)]
     /// Split the focused container horizontally.
     SplitHorizontal,
 
@@ -57,6 +60,8 @@ pub(crate) enum Command {
     /// Close the currently focused window.
     CloseFocused,
 
+    /// Moving between outputs is planned.
+    #[allow(dead_code)]
     /// Move focus to a specific output.
     FocusOutput { output_id: OutputId },
 

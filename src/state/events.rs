@@ -39,6 +39,10 @@ pub(crate) enum Event {
         window_id: WindowId,
         title: Option<String>,
     },
+    ParentUpdated {
+        window_id: WindowId,
+        parent_id: Option<WindowId>,
+    },
     DecorationHintUpdated {
         window_id: WindowId,
         hint: u32,
@@ -55,6 +59,10 @@ pub(crate) enum Event {
     },
     OutputRemoved {
         output_id: OutputId,
+    },
+    OutputNameUpdated {
+        output_id: OutputId,
+        name: u32,
     },
     OutputPositionUpdated {
         output_id: OutputId,

@@ -6,8 +6,6 @@
 //! `last_render_scene`, `last_layer_shell_default`, `render_order_cache`) and
 //! the declarative reconciler (`desired_scene`, `apply_manage`, `apply_render`)
 //! are defined in `scene.rs` as an extension impl on `WMState`.
-#![allow(dead_code)]
-
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -429,7 +427,7 @@ impl WMState {
                 self.request_manage_dirty();
             }
             Event::OutputCreated { output_id } => {
-                let output = Output::new(output_id);
+                let output = Output::new();
                 self.outputs.insert(output_id, output);
 
                 let orphaned: Vec<OutputId> = self
@@ -450,7 +448,7 @@ impl WMState {
                 }
             }
             Event::SeatCreated { seat_id } => {
-                let seat = Seat::new(seat_id);
+                let seat = Seat::new();
                 self.seats.insert(seat_id, seat);
                 if self.current_seat.is_none() {
                     self.current_seat = Some(seat_id);
@@ -489,6 +487,14 @@ impl WMState {
                 }
                 self.evaluate_window_rules(window_id);
             }
+            Event::ParentUpdated {
+                window_id,
+                parent_id,
+            } => {
+                if let Some((_, window)) = self.find_window_mut_by_id(window_id) {
+                    window.parent = parent_id;
+                };
+            }
             Event::DecorationHintUpdated { window_id, hint } => {
                 if let Some((_, window)) = self.find_window_mut_by_id(window_id) {
                     window.decoration_hint = Some(hint);
@@ -521,6 +527,12 @@ impl WMState {
                 self.windows_by_output.remove(&output_id);
                 let _ = self.remove_output_by_id(output_id, reassign_target);
                 self.request_manage_dirty();
+            }
+            Event::OutputNameUpdated { output_id, name } => {
+                if let Some((_, output)) = self.find_output_mut_by_proxy_id(output_id) {
+                    output.wl_output_name = name;
+                    self.request_manage_dirty();
+                }
             }
             Event::OutputPositionUpdated { output_id, x, y } => {
                 if let Some((_, output)) = self.find_output_mut_by_proxy_id(output_id) {
@@ -587,8 +599,8 @@ mod tests {
         let mut state = WMState::new();
         let o1 = OutputId(1);
         let o2 = OutputId(2);
-        state.outputs.insert(o1, Output::new(o1));
-        state.outputs.insert(o2, Output::new(o2));
+        state.outputs.insert(o1, Output::new());
+        state.outputs.insert(o2, Output::new());
         state.focused_output = Some(o1);
 
         let w1 = WindowId(1);
@@ -608,8 +620,8 @@ mod tests {
         let mut state = WMState::new();
         let o1 = OutputId(1);
         let o2 = OutputId(2);
-        state.outputs.insert(o1, Output::new(o1));
-        state.outputs.insert(o2, Output::new(o2));
+        state.outputs.insert(o1, Output::new());
+        state.outputs.insert(o2, Output::new());
         state.outputs.get_mut(&o1).unwrap().set_dimensions(800, 600);
         state
             .outputs
@@ -636,7 +648,7 @@ mod tests {
     fn setup_pseudo_fullscreen_roundtrip() -> (WMState, OutputId, WindowId, Rect) {
         let mut state = WMState::new();
         let o = OutputId(1);
-        let mut out = Output::new(o);
+        let mut out = Output::new();
         out.set_dimensions(1920, 1080);
         state.outputs.insert(o, out);
         state.focused_output = Some(o);
@@ -766,7 +778,7 @@ mod tests {
     fn setup_handle_event_fixture() -> (WMState, OutputId, WindowId) {
         let mut state = WMState::new();
         let o = OutputId(1);
-        let mut out = Output::new(o);
+        let mut out = Output::new();
         out.set_dimensions(1920, 1080);
         state.outputs.insert(o, out);
         state.focused_output = Some(o);
@@ -974,7 +986,7 @@ mod tests {
     fn setup_fullscreen_fixture() -> (WMState, OutputId, WindowId) {
         let mut state = WMState::new();
         let o = OutputId(1);
-        let mut out = Output::new(o);
+        let mut out = Output::new();
         out.set_dimensions(1920, 1080);
         state.outputs.insert(o, out);
         state.focused_output = Some(o);
@@ -1018,7 +1030,7 @@ mod tests {
         let o1 = OutputId(1);
         let o2 = OutputId(2);
         for (o, x) in [(o1, 0), (o2, 1920)] {
-            let mut out = Output::new(o);
+            let mut out = Output::new();
             out.set_dimensions(1920, 1080);
             out.set_position(x, 0);
             state.outputs.insert(o, out);
@@ -1214,7 +1226,7 @@ mod tests {
     fn setup_window_on_output() -> (WMState, OutputId, WindowId) {
         let mut state = WMState::new();
         let o = OutputId(1);
-        let mut out = Output::new(o);
+        let mut out = Output::new();
         out.set_dimensions(1920, 1080);
         state.outputs.insert(o, out);
         state.focused_output = Some(o);
@@ -1231,7 +1243,7 @@ mod tests {
     fn event_window_interaction_focuses_clicked_window() {
         let mut state = WMState::new();
         let o = OutputId(1);
-        let mut out = Output::new(o);
+        let mut out = Output::new();
         out.set_dimensions(1920, 1080);
         state.outputs.insert(o, out);
         state.focused_output = Some(o);
@@ -1368,6 +1380,26 @@ mod tests {
     }
 
     #[test]
+    fn event_parent_updated_stores_parent() {
+        let (mut state, _o, w) = setup_window_on_output();
+
+        assert_eq!(
+            state.windows.get(&w).unwrap().parent,
+            None,
+            "precondition: no parent"
+        );
+        state.handle_event(Event::ParentUpdated {
+            window_id: w,
+            parent_id: Some(WindowId(2)),
+        });
+        assert_eq!(
+            state.windows.get(&w).unwrap().parent,
+            Some(WindowId(2)),
+            "ParentUpdated did not store the parent"
+        );
+    }
+
+    #[test]
     fn event_seat_name_updated_stores_name() {
         let mut state = WMState::new();
         state.handle_event(Event::SeatCreated { seat_id: SeatId(1) });
@@ -1416,7 +1448,7 @@ mod tests {
         let o1 = OutputId(1);
         let o2 = OutputId(2);
         for (o, x) in [(o1, 0), (o2, 1920)] {
-            let mut out = Output::new(o);
+            let mut out = Output::new();
             out.set_dimensions(1920, 1080);
             out.set_position(x, 0);
             state.outputs.insert(o, out);
@@ -1473,7 +1505,7 @@ mod tests {
         // A focused window on an output so the None-mode requeue branch is
         // observable.
         let o1 = OutputId(1);
-        let mut out = Output::new(o1);
+        let mut out = Output::new();
         out.set_dimensions(1920, 1080);
         state.outputs.insert(o1, out);
         state.focused_output = Some(o1);
@@ -1516,6 +1548,29 @@ mod tests {
             state.pending_focus,
             Some(w),
             "None mode did not re-queue the current focus"
+        );
+    }
+
+    #[test]
+    fn event_output_name_updated_stores_name() {
+        let mut state = WMState::new();
+        state.handle_event(Event::OutputCreated {
+            output_id: OutputId(1),
+        });
+        assert_eq!(
+            state.outputs.get(&OutputId(1)).unwrap().wl_output_name,
+            0,
+            "precondition: output name 0"
+        );
+
+        state.handle_event(Event::OutputNameUpdated {
+            output_id: OutputId(1),
+            name: 7,
+        });
+        assert_eq!(
+            state.outputs.get(&OutputId(1)).unwrap().wl_output_name,
+            7,
+            "OutputNameUpdated did not store the name"
         );
     }
 }

@@ -150,7 +150,7 @@ mod tests {
         let mut state = WMState::new();
         let window_id = WindowId(1);
         let output_id = OutputId(1);
-        state.outputs.insert(output_id, Output::new(output_id));
+        state.outputs.insert(output_id, Output::new());
         state.focused_output = Some(output_id);
         let window = Window::new(window_id, output_id);
         state.windows.insert(window_id, window);
@@ -169,7 +169,7 @@ mod tests {
         let w1 = WindowId(1);
         let w2 = WindowId(2);
         let output_id = OutputId(1);
-        state.outputs.insert(output_id, Output::new(output_id));
+        state.outputs.insert(output_id, Output::new());
         state.focused_output = Some(output_id);
         state.windows.insert(w1, Window::new(w1, output_id));
         state.windows.insert(w2, Window::new(w2, output_id));
@@ -191,7 +191,7 @@ mod tests {
         let w2 = WindowId(2);
         let w3 = WindowId(3);
         let output_id = OutputId(1);
-        state.outputs.insert(output_id, Output::new(output_id));
+        state.outputs.insert(output_id, Output::new());
         state.focused_output = Some(output_id);
         state.windows.insert(w1, Window::new(w1, output_id));
         state.windows.insert(w2, Window::new(w2, output_id));
@@ -226,7 +226,7 @@ mod tests {
         let w1 = WindowId(1);
         let w2 = WindowId(2);
         let output_id = OutputId(1);
-        state.outputs.insert(output_id, Output::new(output_id));
+        state.outputs.insert(output_id, Output::new());
         state.focused_output = Some(output_id);
         state.windows.insert(w1, Window::new(w1, output_id));
         state.windows.insert(w2, Window::new(w2, output_id));
@@ -248,7 +248,7 @@ mod tests {
         let mut state = WMState::new();
         let w1 = WindowId(1);
         let output_id = OutputId(1);
-        state.outputs.insert(output_id, Output::new(output_id));
+        state.outputs.insert(output_id, Output::new());
         state.focused_output = Some(output_id);
         state.windows.insert(w1, Window::new(w1, output_id));
         state.tree_for_output(output_id).unwrap().insert_window(1);
@@ -264,8 +264,8 @@ mod tests {
         let mut state = WMState::new();
         let o1 = OutputId(1);
         let o2 = OutputId(2);
-        state.outputs.insert(o1, Output::new(o1));
-        state.outputs.insert(o2, Output::new(o2));
+        state.outputs.insert(o1, Output::new());
+        state.outputs.insert(o2, Output::new());
         state.focused_output = Some(o1);
 
         let w1 = WindowId(1);
@@ -285,7 +285,7 @@ mod tests {
     fn closing_tree_focused_window_keeps_state_and_layout_consistent() {
         let mut state = WMState::new();
         let o1 = OutputId(1);
-        state.outputs.insert(o1, Output::new(o1));
+        state.outputs.insert(o1, Output::new());
         state.focused_output = Some(o1);
 
         let a = WindowId(1);
@@ -323,7 +323,7 @@ mod tests {
         let o1 = OutputId(1);
         let o2 = OutputId(2);
         for (o, x) in [(o1, 0), (o2, 1920)] {
-            let mut out = Output::new(o);
+            let mut out = Output::new();
             out.set_dimensions(1920, 1080);
             out.set_position(x, 0);
             state.outputs.insert(o, out);
@@ -376,7 +376,7 @@ mod tests {
         let o1 = OutputId(1);
         let o2 = OutputId(2);
         for (o, x) in [(o1, 0), (o2, 1920)] {
-            let mut out = Output::new(o);
+            let mut out = Output::new();
             out.set_dimensions(1920, 1080);
             out.set_position(x, 0);
             state.outputs.insert(o, out);
@@ -416,7 +416,7 @@ mod tests {
     fn focus_next_recovers_from_removed_focused_output() {
         let mut state = WMState::new();
         let o1 = OutputId(1);
-        state.outputs.insert(o1, Output::new(o1));
+        state.outputs.insert(o1, Output::new());
 
         let w1 = WindowId(1);
         let w2 = WindowId(2);
@@ -447,7 +447,7 @@ mod tests {
 
         let mut state = WMState::new();
         let o1 = OutputId(1);
-        state.outputs.insert(o1, Output::new(o1));
+        state.outputs.insert(o1, Output::new());
         state.focused_output = Some(o1);
         state.output_trees.insert(
             o1,
@@ -541,7 +541,7 @@ mod tests {
         let o2 = OutputId(2);
         let outputs = [o1, o2];
         for (o, x) in [(o1, 0), (o2, 1920)] {
-            let mut out = Output::new(o);
+            let mut out = Output::new();
             out.set_dimensions(1920, 1080);
             out.set_position(x, 0);
             state.outputs.insert(o, out);
@@ -638,7 +638,7 @@ mod tests {
         let o1 = OutputId(1);
         let o2 = OutputId(2);
         for (o, x) in [(o1, 0), (o2, 1920)] {
-            let mut out = Output::new(o);
+            let mut out = Output::new();
             out.set_dimensions(1920, 1080);
             out.set_position(x, 0);
             state.outputs.insert(o, out);
@@ -681,7 +681,7 @@ mod tests {
         let o1 = OutputId(1);
         let o2 = OutputId(2);
         for (o, x) in [(o1, 0), (o2, 1920)] {
-            let mut out = Output::new(o);
+            let mut out = Output::new();
             out.set_dimensions(1920, 1080);
             out.set_position(x, 0);
             state.outputs.insert(o, out);
@@ -726,7 +726,7 @@ mod tests {
         let o1 = OutputId(1);
         let o2 = OutputId(2);
         for (o, x) in [(o1, 0), (o2, 1920)] {
-            let mut out = Output::new(o);
+            let mut out = Output::new();
             out.set_dimensions(1920, 1080);
             out.set_position(x, 0);
             state.outputs.insert(o, out);
@@ -783,7 +783,7 @@ mod tests {
     fn closing_last_remaining_window_clears_focus() {
         let mut state = WMState::new();
         let o1 = OutputId(1);
-        let mut out = Output::new(o1);
+        let mut out = Output::new();
         out.set_dimensions(1920, 1080);
         state.outputs.insert(o1, out);
         state.focused_output = Some(o1);

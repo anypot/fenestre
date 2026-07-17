@@ -1,6 +1,4 @@
 //! River output tracking.
-#![allow(dead_code)]
-
 use crate::layout::Rect;
 use crate::protocol::river::river_layer_shell_v1::client::river_layer_shell_output_v1::RiverLayerShellOutputV1;
 use crate::protocol::river::river_window_management_v1::client::river_output_v1::RiverOutputV1;
@@ -11,9 +9,6 @@ pub(crate) struct OutputId(pub u32);
 
 /// Runtime state for a River output.
 pub(super) struct Output {
-    /// Internal output identifier.
-    pub(super) id: OutputId,
-
     /// River output protocol proxy.
     pub(super) river_output: Option<RiverOutputV1>,
 
@@ -37,9 +32,8 @@ pub(super) struct Output {
 
 impl Output {
     /// Create a new output record.
-    pub(super) fn new(id: OutputId) -> Self {
+    pub(super) fn new() -> Self {
         Self {
-            id,
             river_output: None,
             river_layer_shell_output: None,
             wl_output_name: 0,
@@ -92,13 +86,13 @@ mod tests {
 
     #[test]
     fn tiling_rect_is_none_without_geometry() {
-        let output = Output::new(OutputId(0));
+        let output = Output::new();
         assert_eq!(output.tiling_rect(), None);
     }
 
     #[test]
     fn tiling_rect_falls_back_to_full_output_rect() {
-        let mut output = Output::new(OutputId(0));
+        let mut output = Output::new();
         output.set_position(10, 20);
         output.set_dimensions(1920, 1080);
         assert_eq!(output.tiling_rect(), Some(Rect::new(10, 20, 1920, 1080)));
@@ -106,7 +100,7 @@ mod tests {
 
     #[test]
     fn tiling_rect_prefers_non_exclusive_area_over_full_rect() {
-        let mut output = Output::new(OutputId(0));
+        let mut output = Output::new();
         output.set_position(0, 0);
         output.set_dimensions(1920, 1080);
         // A 40px top bar: usable area starts lower and is shorter.
@@ -116,7 +110,7 @@ mod tests {
 
     #[test]
     fn tiling_rect_uses_non_exclusive_area_even_before_dimensions() {
-        let mut output = Output::new(OutputId(0));
+        let mut output = Output::new();
         output.set_non_exclusive_area(0, 40, 1920, 1040);
         assert_eq!(output.tiling_rect(), Some(Rect::new(0, 40, 1920, 1040)));
     }

@@ -266,6 +266,15 @@ impl Dispatch<RiverWindowV1, ()> for WMState {
                     target: "fenestre::state::handlers",
                     "RiverWindowV1 event: Parent updated to {parent:?}"
                 );
+                let Some(window_id) = state.windows_by_proxy.get(proxy).copied() else {
+                    return;
+                };
+                let parent_id = parent.and_then(|p| state.windows_by_proxy.get(&p).copied());
+                let event = super::events::Event::ParentUpdated {
+                    window_id,
+                    parent_id,
+                };
+                state.handle_event(event);
             }
             Event::DecorationHint { hint } => {
                 debug!(
@@ -416,6 +425,11 @@ impl Dispatch<RiverOutputV1, ()> for WMState {
                     target: "fenestre::state::handlers",
                     "RiverOutputV1 event: WlOutput created with name {name}"
                 );
+                let Some(output_id) = state.outputs_by_proxy.get(proxy).copied() else {
+                    return;
+                };
+                let event = super::events::Event::OutputNameUpdated { output_id, name };
+                state.handle_event(event);
             }
             Event::Position { x, y } => {
                 debug!(

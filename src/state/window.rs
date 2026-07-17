@@ -1,6 +1,4 @@
 //! River window tracking.
-#![allow(dead_code)]
-
 use crate::layout::Rect;
 use crate::protocol::river::river_window_management_v1::client::river_node_v1::RiverNodeV1;
 use crate::protocol::river::river_window_management_v1::client::river_window_v1::RiverWindowV1;
@@ -11,15 +9,6 @@ use super::output::OutputId;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) struct WindowId(pub u32);
 
-/// Logical window position.
-#[derive(Default)]
-pub(super) struct Position {
-    /// X coordinate.
-    pub(super) x: i32,
-
-    /// Y coordinate.
-    pub(super) y: i32,
-}
 /// Window dimensions.
 #[derive(Default)]
 pub(super) struct Dimensions {
@@ -78,9 +67,6 @@ pub(super) struct Window {
     /// Desired layout rectangle.
     pub(super) layout_rect: Option<Rect>,
 
-    /// Current position.
-    pub(super) position: Position,
-
     /// Current size hints.
     pub(super) dimensions_hint: DimensionsHint,
 
@@ -112,7 +98,6 @@ impl Window {
             title: None,
             rules_applied: false,
             pid: 0,
-            position: Position::default(),
             dimensions_hint: DimensionsHint::default(),
             decoration_hint: None,
         }
@@ -126,12 +111,6 @@ impl Window {
     /// Update this window's output id.
     pub(super) fn set_output_id(&mut self, output_id: OutputId) {
         self.output_id = output_id;
-    }
-
-    /// Update this window's position.
-    pub(super) fn set_position(&mut self, x: i32, y: i32) {
-        self.position.x = x;
-        self.position.y = y;
     }
 
     /// Record the app-provided size constraints reported by the compositor.
