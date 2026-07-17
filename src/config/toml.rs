@@ -21,9 +21,9 @@ mod tests {
     use crate::config::ConfigError;
     use crate::config::KeyBindingConfig;
     use crate::config::KeyBindingTarget;
+    use crate::config::RulePattern;
     use crate::config::schema;
     use crate::layout::{Rect, WindowState};
-    use crate::state::rule::RulePattern;
     use std::{
         fs,
         path::{Path, PathBuf},

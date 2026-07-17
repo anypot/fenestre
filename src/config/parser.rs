@@ -2,10 +2,11 @@
 //!
 //! This module does not know about Lua, TOML, YAML, or any file format.
 //! It only converts parsed strings into Fenestre's shared config types.
-use super::{ConfigError, KeyBindingConfig, KeyBindingTarget, LayoutConfig, Result};
+use super::{
+    ConfigError, KeyBindingConfig, KeyBindingTarget, LayoutConfig, Result, RulePattern, WindowRule,
+};
 use crate::command::Command;
 use crate::layout::Rect;
-use crate::state::rule::{RulePattern, WindowRule};
 use serde::{Deserialize, Serialize};
 use xkbcommon::xkb;
 

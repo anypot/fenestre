@@ -10,8 +10,11 @@
 pub mod defaults;
 mod lua;
 pub mod parser;
+mod rule_types;
 pub mod schema;
 mod toml;
+
+pub(crate) use rule_types::{RulePattern, WindowRule};
 
 use crate::command::Command;
 use std::collections::HashMap;
@@ -201,7 +204,7 @@ pub struct Config {
     pub resize_delta_percent: Option<f32>,
 
     /// Per-window rules applied on metadata arrival.
-    pub rules: Vec<crate::state::rule::WindowRule>,
+    pub rules: Vec<WindowRule>,
 }
 
 impl Config {

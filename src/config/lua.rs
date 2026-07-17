@@ -123,7 +123,7 @@ mod tests {
         assert_eq!(config.rules.len(), 1);
         assert!(matches!(
             config.rules[0].app_id,
-            Some(crate::state::rule::RulePattern::Exact(ref s)) if s == "foot"
+            Some(crate::config::RulePattern::Exact(ref s)) if s == "foot"
         ));
         assert_eq!(
             config.rules[0].target,
@@ -151,7 +151,7 @@ mod tests {
 
         assert!(matches!(
             config.rules[0].app_id,
-            Some(crate::state::rule::RulePattern::Prefix(ref s)) if s == "mate-"
+            Some(crate::config::RulePattern::Prefix(ref s)) if s == "mate-"
         ));
     }
 
@@ -176,11 +176,11 @@ mod tests {
         let rule = &config.rules[0];
         assert!(matches!(
             rule.app_id,
-            Some(crate::state::rule::RulePattern::Regex(_))
+            Some(crate::config::RulePattern::Regex(_))
         ));
         assert!(matches!(
             rule.title,
-            Some(crate::state::rule::RulePattern::Regex(_))
+            Some(crate::config::RulePattern::Regex(_))
         ));
         assert_eq!(
             rule.target,

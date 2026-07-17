@@ -8,7 +8,6 @@
 
 use super::*;
 use crate::layout::Rect;
-use crate::state::rule::WindowRule;
 use serde::Deserialize;
 use serde_json::Number;
 

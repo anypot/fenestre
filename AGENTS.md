@@ -56,7 +56,7 @@ fenestre/
   src/
     main.rs                - Bootstrap: env_logger, WMState, Wayland connection, calloop loop
     command/               - Internal Command enum (NOT a public IPC API)
-    config/                - Config, KeyBindingConfig, KeyBindingTarget, ConfigError, loaders (lua/toml), schema, parser
+    config/                - Config, KeyBindingConfig, KeyBindingTarget, ConfigError, loaders (lua/toml), schema, parser, rule_types (RulePattern/WindowRule data types)
     layout/                - BSP tree (LayoutTree, LayoutNode, Rect, split/focus/arrange, resize logic)
     protocol/              - wayland-scanner generated River protocol bindings
     state/                 - WMState, Event/Effect domains, adapter, handlers, commands, config, keybindings, window/output/seat proxies, rule, reassign, focus (focus stack / close reconciliation)

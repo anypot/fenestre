@@ -194,8 +194,8 @@ flowchart TD
   arrives), after which the window is finalized and never re-evaluated.
 - Rules are applied once per window. Reloading config does **not** re-apply rules
   to already-on-screen windows (by design).
-- Implementation: `state/rule.rs` (`WindowRule`, `RulePattern`, `WindowRules`);
-  evaluation is triggered by `Event::AppIdUpdated` / `Event::TitleUpdated` via
+- Implementation: `config/rule_types.rs` (`RulePattern`, `WindowRule`) + `state/rule.rs`
+  (`WindowRules`); evaluation is triggered by `Event::AppIdUpdated` / `Event::TitleUpdated` via
   `WMState::evaluate_window_rules` (handlers.rs translates the River events into
   those `Event`s), and re-run for an output's windows when its geometry becomes
   known (to catch up windows deferred for a missing output rect).
