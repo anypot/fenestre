@@ -3,8 +3,6 @@
 //! Owns the scene computation and the manage/render effect sequences for
 //! `WMState`. The four scene-related fields on `WMState` are owned by this
 //! module — mutate them only through `apply_manage` or `apply_render`.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 use super::WMState;
