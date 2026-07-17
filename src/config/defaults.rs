@@ -9,6 +9,7 @@ use xkbcommon::xkb::keysyms::*;
 
 const SUPER: u32 = 64;
 const SHIFT: u32 = 1;
+const CTRL: u32 = 4;
 const ALT: u32 = 8;
 
 fn binding(
@@ -192,6 +193,30 @@ pub fn defaults() -> Config {
                 Command::ResizeShrink {
                     direction: crate::layout::FocusDirection::Right,
                 },
+            ),
+            binding(
+                KeyBindingTarget::Primary,
+                KEY_h,
+                SUPER | CTRL,
+                Command::FocusOutputLeft,
+            ),
+            binding(
+                KeyBindingTarget::Primary,
+                KEY_j,
+                SUPER | CTRL,
+                Command::FocusOutputDown,
+            ),
+            binding(
+                KeyBindingTarget::Primary,
+                KEY_k,
+                SUPER | CTRL,
+                Command::FocusOutputUp,
+            ),
+            binding(
+                KeyBindingTarget::Primary,
+                KEY_l,
+                SUPER | CTRL,
+                Command::FocusOutputRight,
             ),
         ],
         rules: Vec::new(),

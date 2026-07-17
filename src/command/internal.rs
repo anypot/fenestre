@@ -3,7 +3,6 @@
 //! A `Command` is not a public IPC API. It is the internal dispatch enum used
 //! by config-loaded keybindings and `WMState` command handling.
 use crate::layout::FocusDirection;
-use crate::state::OutputId;
 
 /// Internal action triggered by a keybinding or future command source.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,10 +59,17 @@ pub(crate) enum Command {
     /// Close the currently focused window.
     CloseFocused,
 
-    /// Moving between outputs is planned.
-    #[allow(dead_code)]
-    /// Move focus to a specific output.
-    FocusOutput { output_id: OutputId },
+    /// Move focus to the output to the left.
+    FocusOutputLeft,
+
+    /// Move focus to the output to the right.
+    FocusOutputRight,
+
+    /// Move focus to the output above.
+    FocusOutputUp,
+
+    /// Move focus to the output below.
+    FocusOutputDown,
 
     /// Move the focused window left.
     MoveLeft,
