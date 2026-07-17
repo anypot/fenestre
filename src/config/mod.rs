@@ -207,6 +207,13 @@ pub struct Config {
     pub rules: Vec<WindowRule>,
 }
 
+/// Override an `Option` field when the source value is `Some`.
+pub(crate) fn apply_if_some<T>(field: &mut Option<T>, override_: Option<T>) {
+    if let Some(val) = override_ {
+        *field = Some(val);
+    }
+}
+
 impl Config {
     /// Precompute RGBA values from ARGB border colors for efficient rendering.
     ///
@@ -334,40 +341,25 @@ impl Config {
     /// behaves like an append. It is not intended for partial overlays or
     /// runtime rule additions.
     fn merge(&mut self, other: Self) {
-        if let Some(gap) = other.layout.gap {
-            self.layout.gap = Some(gap);
-        }
-        if let Some(margin_top) = other.layout.margin_top {
-            self.layout.margin_top = Some(margin_top);
-        }
-        if let Some(margin_right) = other.layout.margin_right {
-            self.layout.margin_right = Some(margin_right);
-        }
-        if let Some(margin_bottom) = other.layout.margin_bottom {
-            self.layout.margin_bottom = Some(margin_bottom);
-        }
-        if let Some(margin_left) = other.layout.margin_left {
-            self.layout.margin_left = Some(margin_left);
-        }
-        if let Some(default_float_ratio) = other.layout.default_float_ratio {
-            self.layout.default_float_ratio = Some(default_float_ratio);
-        }
+        use crate::config::apply_if_some;
+        apply_if_some(&mut self.layout.gap, other.layout.gap);
+        apply_if_some(&mut self.layout.margin_top, other.layout.margin_top);
+        apply_if_some(&mut self.layout.margin_right, other.layout.margin_right);
+        apply_if_some(&mut self.layout.margin_bottom, other.layout.margin_bottom);
+        apply_if_some(&mut self.layout.margin_left, other.layout.margin_left);
+        apply_if_some(
+            &mut self.layout.default_float_ratio,
+            other.layout.default_float_ratio,
+        );
         self.decorations = other.decorations;
-        if let Some(border_width) = other.border_width {
-            self.border_width = Some(border_width);
-        }
-        if let Some(border_color_focused) = other.border_color_focused {
-            self.border_color_focused = Some(border_color_focused);
-        }
-        if let Some(border_color_unfocused) = other.border_color_unfocused {
-            self.border_color_unfocused = Some(border_color_unfocused);
-        }
-        if let Some(resize_delta_ratio) = other.resize_delta_ratio {
-            self.resize_delta_ratio = Some(resize_delta_ratio);
-        }
-        if let Some(resize_delta_percent) = other.resize_delta_percent {
-            self.resize_delta_percent = Some(resize_delta_percent);
-        }
+        apply_if_some(&mut self.border_width, other.border_width);
+        apply_if_some(&mut self.border_color_focused, other.border_color_focused);
+        apply_if_some(
+            &mut self.border_color_unfocused,
+            other.border_color_unfocused,
+        );
+        apply_if_some(&mut self.resize_delta_ratio, other.resize_delta_ratio);
+        apply_if_some(&mut self.resize_delta_percent, other.resize_delta_percent);
         // Replaced, not identity-merged: defaults ship no rules by design.
         self.rules = other.rules;
         // Pre-index defaults for O(1) identity lookup instead of linear scan.
