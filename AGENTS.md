@@ -110,7 +110,8 @@ scannable — move detailed explanations into `docs/`, not into this file.
 
 ## Work in Progress / Gotchas
 
-- Some command implementations are placeholders: rotate and cycle are not wired.
+- A layout `rotate` command does not exist (no `Command::Rotate` variant). Focus
+  cycling (`FocusNext` / `FocusPrevious`) is wired.
 - Pointer-driven move/resize is not implemented.
 - IPC is not implemented.
 - `wayland-client` event_created_child is used for River child objects;
@@ -143,12 +144,15 @@ scannable — move detailed explanations into `docs/`, not into this file.
 
 ## Planned work
 
-See [`docs/refactor-plan.md`](docs/refactor-plan.md) for the scoped improvements
-and their design, sequencing, and risk notes.
+Scope and sequencing for further improvements live in [`docs/refactor-plan.md`](docs/refactor-plan.md).
+Note that several of its initiatives (pure core + adapter split, declarative
+scene reconciler, unified TOML/Lua config schema, typed `WindowState`) are
+**already merged** — treat the plan as historical context, not a pending backlog.
 
 ## Docker / Environment Notes
 
-No Dockerfile or CI workflow is present. The project targets a Linux desktop environment
+CI runs in `.github/workflows/ci.yml` (fmt + clippy `-D warnings` + tests on
+push/PR). No Dockerfile is present. The project targets a Linux desktop environment
 with a River compositor that supports:
 
 - `river_window_management_v1` (version 5)
