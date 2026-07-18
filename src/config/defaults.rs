@@ -240,6 +240,30 @@ pub fn defaults() -> Config {
                 SUPER,
                 Command::CancelPendingSplit,
             ),
+            binding(
+                KeyBindingTarget::Primary,
+                KEY_h,
+                SUPER | CTRL,
+                Command::FocusOutputLeft,
+            ),
+            binding(
+                KeyBindingTarget::Primary,
+                KEY_j,
+                SUPER | CTRL,
+                Command::FocusOutputDown,
+            ),
+            binding(
+                KeyBindingTarget::Primary,
+                KEY_k,
+                SUPER | CTRL,
+                Command::FocusOutputUp,
+            ),
+            binding(
+                KeyBindingTarget::Primary,
+                KEY_l,
+                SUPER | CTRL,
+                Command::FocusOutputRight,
+            ),
         ],
         rules: Vec::new(),
     }

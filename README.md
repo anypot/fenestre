@@ -131,6 +131,9 @@ All matching rules apply, later wins. Rules are evaluated once per window as its
 - `Shift+Super+Alt+j`: resize shrink down
 - `Shift+Super+Alt+k`: resize shrink up
 - `Shift+Super+Alt+l`: resize shrink right
+- `Super+v`: toggle pending split (vertical axis)
+- `Super+Shift+v`: toggle pending split (horizontal axis)
+- `Super+Escape`: cancel pending split
 - `Super+Ctrl+h`: focus output to the left
 - `Super+Ctrl+j`: focus output below
 - `Super+Ctrl+k`: focus output above
@@ -139,4 +142,4 @@ All matching rules apply, later wins. Rules are evaluated once per window as its
 
 Working: River integration, Lua + TOML config loading (TOML preferred), per-output BSP layout with hotplug reassignment, compositor-side borders, window rules, and keyboard-driven focus/move/resize.
 
-Not yet implemented: pointer-driven move/resize, IPC, and some commands (window rotate, window cycle).
+Not yet implemented: pointer-driven move/resize, IPC, and a layout rotate command.
