@@ -2,7 +2,7 @@ decorations = false
 
 border_width = 2
 border_color_focused = 0xff0000ff
-border_color_unfocused = 0x00ff00ff
+border_color_unfocused = 0xff888888
 
 [layout]
 gap = 10
