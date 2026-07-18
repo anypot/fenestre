@@ -6,6 +6,8 @@ return {
         margin_bottom = 10,
         margin_left = 10,
         default_float_ratio = 0.5,
+        preview_border_color = 0xff00ff00,
+        preview_border_width = 4,
     },
 
     decorations = false,
@@ -144,6 +146,21 @@ return {
             keysym = "l",
             modifiers = { "super", "shift", "alt" },
             command = { "resize_shrink_right" },
+        },
+        {
+            keysym = "v",
+            modifiers = { "super" },
+            command = "toggle_pending_split_vertical",
+        },
+        {
+            keysym = "v",
+            modifiers = { "super", "shift" },
+            command = "toggle_pending_split_horizontal",
+        },
+        {
+            keysym = "Escape",
+            modifiers = { "super" },
+            command = "cancel_pending_split",
         },
     },
 

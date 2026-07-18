@@ -448,7 +448,7 @@ mod tests {
         let config =
             load_from_toml(Path::new("examples/fenestre.toml")).expect("example should load");
 
-        assert_eq!(config.keybindings.len(), 26);
+        assert_eq!(config.keybindings.len(), 29);
         assert_eq!(config.rules.len(), 4);
         assert_eq!(config.layout.gap, Some(10));
         assert_eq!(config.border_width, Some(2));
@@ -462,5 +462,29 @@ mod tests {
         assert_eq!(config.keybindings.len(), 2);
         assert!(config.rules.is_empty());
         assert_eq!(config.layout.gap, Some(4));
+    }
+
+    #[test]
+    fn parse_config_table_clamps_preview_border_width_to_minimum() {
+        let config =
+            parse_config_table(r#"layout.preview_border_width = -5"#).expect("config should load");
+
+        assert_eq!(config.layout.preview_border_width, Some(0));
+    }
+
+    #[test]
+    fn parse_config_table_clamps_preview_border_width_to_maximum() {
+        let config =
+            parse_config_table(r#"layout.preview_border_width = 200"#).expect("config should load");
+
+        assert_eq!(config.layout.preview_border_width, Some(100));
+    }
+
+    #[test]
+    fn parse_config_table_preserves_valid_preview_border_width() {
+        let config =
+            parse_config_table(r#"layout.preview_border_width = 42"#).expect("config should load");
+
+        assert_eq!(config.layout.preview_border_width, Some(42));
     }
 }

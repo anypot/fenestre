@@ -9,7 +9,7 @@ use super::WMState;
 use super::effects::Effect;
 use super::output::OutputId;
 use super::window::WindowId;
-use crate::layout::{Rect, WindowState};
+use crate::layout::{Rect, SplitDirection, WindowState};
 use wayland_client::QueueHandle;
 
 /// A single window's entry in a desired scene snapshot.
@@ -20,7 +20,7 @@ pub(super) struct SceneEntry {
     pub(crate) rect: Rect,
     pub(crate) state: WindowState,
     pub(crate) z: (u8, u8, u32),
-    pub(crate) border: Option<(i32, u32, u32, u32, u32)>,
+    pub(crate) border: Option<(u32, i32, u32, u32, u32, u32)>,
 }
 
 pub(super) type SceneSnapshot = Vec<SceneEntry>;
@@ -85,12 +85,33 @@ impl WMState {
                 let border = if use_decor {
                     None
                 } else {
-                    let rgba = if self.focused_window == Some(window_id) {
-                        rgba_focused
+                    let focused_argb = self
+                        .config
+                        .as_ref()
+                        .and_then(|c| c.border_color_focused)
+                        .unwrap_or(0xffffffff);
+                    let (rgba, edges, width) = if self.focused_window == Some(window_id)
+                        && let Some(direction) = self.pending_split
+                    {
+                        let preview_color = self
+                            .config
+                            .as_ref()
+                            .and_then(|c| c.layout.preview_border_color)
+                            .unwrap_or(focused_argb);
+                        let preview_width = self
+                            .config
+                            .as_ref()
+                            .and_then(|c| c.layout.preview_border_width)
+                            .unwrap_or(border_width);
+                        let rgba = crate::config::argb_to_rgba(preview_color);
+                        let edge = preview_edge(direction);
+                        (rgba, edge, preview_width)
+                    } else if self.focused_window == Some(window_id) {
+                        (rgba_focused, super::effects::ALL_EDGES, border_width)
                     } else {
-                        rgba_unfocused
+                        (rgba_unfocused, super::effects::ALL_EDGES, border_width)
                     };
-                    Some((border_width, rgba.0, rgba.1, rgba.2, rgba.3))
+                    Some((edges, width, rgba.0, rgba.1, rgba.2, rgba.3))
                 };
 
                 scene.push(SceneEntry {
@@ -295,10 +316,10 @@ impl WMState {
                         window_id: *window_id,
                     });
                 }
-                if let Some((width, r, g, b, a)) = entry.border {
+                if let Some((edges, width, r, g, b, a)) = entry.border {
                     effects.push(Effect::SetBorders {
                         window_id: *window_id,
-                        edges: super::effects::ALL_EDGES,
+                        edges,
                         width,
                         r,
                         g,
@@ -329,11 +350,11 @@ impl WMState {
             }
 
             if last.border != entry.border
-                && let Some((width, r, g, b, a)) = entry.border
+                && let Some((edges, width, r, g, b, a)) = entry.border
             {
                 effects.push(Effect::SetBorders {
                     window_id: *window_id,
-                    edges: super::effects::ALL_EDGES,
+                    edges,
                     width,
                     r,
                     g,
@@ -375,6 +396,16 @@ fn mode_priority(state: &WindowState) -> u8 {
     }
 }
 
+/// Map a split direction to the corresponding single edge bitmask for River's `set_borders`.
+fn preview_edge(direction: SplitDirection) -> u32 {
+    match direction {
+        SplitDirection::Right => 0b1000,
+        SplitDirection::Left => 0b0100,
+        SplitDirection::Down => 0b0010,
+        SplitDirection::Up => 0b0001,
+    }
+}
+
 /// Compute the render stack priority for a window.
 /// Returns a tuple of (mode_priority, focus_priority, window_id) for deterministic z-ordering.
 fn render_stack_priority(
@@ -390,4 +421,89 @@ fn render_stack_priority(
     };
 
     (mode_priority, focus_priority, window_id.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::state::effects::ALL_EDGES;
+    use crate::state::output::Output;
+    use crate::state::window::Window;
+
+    #[test]
+    fn pending_split_gives_focused_window_preview_border() {
+        let mut state = WMState::new();
+        let o1 = OutputId(1);
+        state.outputs.insert(o1, Output::new());
+        state.focused_output = Some(o1);
+        let w1 = WindowId(1);
+        state.windows.insert(w1, Window::new(w1, o1));
+        state.output_trees.insert(
+            o1,
+            crate::layout::LayoutTree::new(crate::layout::Rect::new(0, 0, 1000, 100)),
+        );
+        state.tree_for_output(o1).unwrap().insert_window(1, None);
+        state.focus_window_id(w1);
+        state.pending_split = Some(crate::layout::SplitDirection::Right);
+        state.config = Some(Config {
+            layout: crate::config::LayoutConfig {
+                preview_border_color: Some(0xff0000ff),
+                preview_border_width: Some(3),
+                ..Default::default()
+            },
+            decorations: false,
+            border_width: Some(2),
+            border_color_focused: Some(0xffffffff),
+            border_color_unfocused: Some(0xffffffff),
+            keybindings: Vec::new(),
+            resize_delta_ratio: None,
+            resize_delta_percent: None,
+            rules: Vec::new(),
+        });
+
+        let scene = state.desired_scene();
+
+        let entry = scene.iter().find(|e| e.window_id == w1).unwrap();
+        assert!(entry.border.is_some());
+        let (edges, width, _r, _g, _b, _a) = entry.border.unwrap();
+        assert_eq!(edges, 0b1000);
+        assert_eq!(width, 3);
+    }
+
+    #[test]
+    fn pending_split_none_gives_normal_border() {
+        let mut state = WMState::new();
+        let o1 = OutputId(1);
+        state.outputs.insert(o1, Output::new());
+        state.focused_output = Some(o1);
+        let w1 = WindowId(1);
+        state.windows.insert(w1, Window::new(w1, o1));
+        state.output_trees.insert(
+            o1,
+            crate::layout::LayoutTree::new(crate::layout::Rect::new(0, 0, 1000, 100)),
+        );
+        state.tree_for_output(o1).unwrap().insert_window(1, None);
+        state.focus_window_id(w1);
+        state.pending_split = None;
+        state.config = Some(Config {
+            layout: crate::config::LayoutConfig::default(),
+            decorations: false,
+            border_width: Some(2),
+            border_color_focused: Some(0xffffffff),
+            border_color_unfocused: Some(0xffffffff),
+            keybindings: Vec::new(),
+            resize_delta_ratio: None,
+            resize_delta_percent: None,
+            rules: Vec::new(),
+        });
+
+        let scene = state.desired_scene();
+
+        let entry = scene.iter().find(|e| e.window_id == w1).unwrap();
+        assert!(entry.border.is_some());
+        let (edges, width, _r, _g, _b, _a) = entry.border.unwrap();
+        assert_eq!(edges, ALL_EDGES);
+        assert_eq!(width, 2);
+    }
 }

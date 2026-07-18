@@ -364,7 +364,7 @@ mod tests {
         let config =
             load_from_lua(Path::new("examples/fenestre.lua")).expect("example should load");
 
-        assert_eq!(config.keybindings.len(), 26);
+        assert_eq!(config.keybindings.len(), 29);
         assert_eq!(config.rules.len(), 4);
         assert_eq!(config.layout.gap, Some(10));
         assert_eq!(config.border_width, Some(2));

@@ -21,7 +21,20 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Precomputed RGBA color components in 0-255 range.
-pub(super) type Rgba = (u32, u32, u32, u32);
+pub(crate) type Rgba = (u32, u32, u32, u32);
+
+/// Convert an ARGB hex value (0xAARRGGBB) to an RGBA tuple with each
+/// component scaled from 8-bit to the full 32-bit range (0–0xFFFFFFFF),
+/// matching River's `set_borders` protocol expectations.
+pub(crate) fn argb_to_rgba(argb: u32) -> Rgba {
+    let scale = |v: u32| (v as u64 * u64::from(u32::MAX) / 255) as u32;
+    (
+        scale((argb >> 16) & 0xff),
+        scale((argb >> 8) & 0xff),
+        scale(argb & 0xff),
+        scale((argb >> 24) & 0xff),
+    )
+}
 
 /// Result type for configuration loading and parsing.
 pub type Result<T> = std::result::Result<T, ConfigError>;
@@ -170,6 +183,12 @@ pub struct LayoutConfig {
     /// Default floating / pseudo-tiled size as a fraction of the destination
     /// output, used when a window has not reported its own dimensions.
     pub default_float_ratio: Option<f32>,
+
+    /// Border color for the pending split preview in 0xAARRGGBB format.
+    pub preview_border_color: Option<u32>,
+
+    /// Border width in pixels for the pending split preview.
+    pub preview_border_width: Option<i32>,
 }
 
 /// Complete Fenêtre configuration.
@@ -221,19 +240,9 @@ impl Config {
     /// `(red, green, blue, alpha)` in 0-255 range suitable for passing
     /// directly to `set_borders`.
     pub(super) fn border_rgba(&self) -> (Rgba, Rgba) {
-        let to_rgba = |argb: u32| -> Rgba {
-            let to_u32 = |v: u32| (v as u64 * 0xffffffff / 255) as u32;
-            (
-                to_u32((argb >> 16) & 0xff),
-                to_u32((argb >> 8) & 0xff),
-                to_u32(argb & 0xff),
-                to_u32((argb >> 24) & 0xff),
-            )
-        };
-
         let focused = self.border_color_focused.unwrap_or(0xffffffff);
         let unfocused = self.border_color_unfocused.unwrap_or(0xffffffff);
-        (to_rgba(focused), to_rgba(unfocused))
+        (argb_to_rgba(focused), argb_to_rgba(unfocused))
     }
 
     /// Load the built-in default configuration.
@@ -350,6 +359,14 @@ impl Config {
         apply_if_some(
             &mut self.layout.default_float_ratio,
             other.layout.default_float_ratio,
+        );
+        apply_if_some(
+            &mut self.layout.preview_border_color,
+            other.layout.preview_border_color,
+        );
+        apply_if_some(
+            &mut self.layout.preview_border_width,
+            other.layout.preview_border_width,
         );
         self.decorations = other.decorations;
         apply_if_some(&mut self.border_width, other.border_width);
@@ -566,6 +583,8 @@ mod tests {
             margin_bottom: None,
             margin_left: None,
             default_float_ratio: None,
+            preview_border_color: None,
+            preview_border_width: None,
         }
     }
 

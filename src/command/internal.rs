@@ -25,15 +25,26 @@ pub(crate) enum Command {
     /// Move focus right.
     FocusRight,
 
-    /// Choose a split direction is planned.
-    #[allow(dead_code)]
-    /// Split the focused container vertically.
-    SplitVertical,
+    /// Split the focused container to the right (focused on left).
+    SplitRight,
 
-    /// Choose a split direction is planned.
-    #[allow(dead_code)]
-    /// Split the focused container horizontally.
-    SplitHorizontal,
+    /// Split the focused container to the left (focused on right).
+    SplitLeft,
+
+    /// Split the focused container downward (focused on top).
+    SplitDown,
+
+    /// Split the focused container upward (focused on bottom).
+    SplitUp,
+
+    /// Toggle the pending split direction on the vertical axis.
+    TogglePendingSplitVertical,
+
+    /// Toggle the pending split direction on the horizontal axis.
+    TogglePendingSplitHorizontal,
+
+    /// Cancel a pending split direction.
+    CancelPendingSplit,
 
     /// Toggle fullscreen for the focused window.
     ToggleFullscreen,

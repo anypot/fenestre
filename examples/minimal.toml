@@ -10,6 +10,8 @@ margin_top = 24
 margin_right = 4
 margin_bottom = 4
 margin_left = 4
+preview_border_color = 0xff00ff00
+preview_border_width = 4
 
 border_width = 2
 

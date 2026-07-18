@@ -219,6 +219,13 @@ fn parse_command(tokens: &[&str]) -> Option<Command> {
         "resize_shrink_down" => Some(Command::ResizeShrink {
             direction: crate::layout::FocusDirection::Down,
         }),
+        "split_right" => Some(Command::SplitRight),
+        "split_left" => Some(Command::SplitLeft),
+        "split_down" => Some(Command::SplitDown),
+        "split_up" => Some(Command::SplitUp),
+        "toggle_pending_split_vertical" => Some(Command::TogglePendingSplitVertical),
+        "toggle_pending_split_horizontal" => Some(Command::TogglePendingSplitHorizontal),
+        "cancel_pending_split" => Some(Command::CancelPendingSplit),
         "focus_output_left" => Some(Command::FocusOutputLeft),
         "focus_output_right" => Some(Command::FocusOutputRight),
         "focus_output_up" => Some(Command::FocusOutputUp),
@@ -283,8 +290,9 @@ pub(super) fn build_pattern(name: &str, pattern: RawPattern) -> Result<RulePatte
     }
 }
 
-/// Format-neutral margins table consumed by `build_layout`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Format-neutral margins table; flat `margin_*` fields are folded into this
+/// before being handed to `build_layout`, so it always carries the resolved edges.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub(crate) struct RawMargins {
     pub top: Option<i32>,
     pub right: Option<i32>,
@@ -296,30 +304,20 @@ pub(crate) struct RawMargins {
 /// precedence exactly once.
 pub(super) fn build_layout(
     gap: Option<i32>,
-    margin_top: Option<i32>,
-    margin_right: Option<i32>,
-    margin_bottom: Option<i32>,
-    margin_left: Option<i32>,
-    margins: Option<RawMargins>,
+    margins: RawMargins,
     default_float_ratio: Option<f32>,
+    preview_border_color: Option<u32>,
+    preview_border_width: Option<i32>,
 ) -> LayoutConfig {
-    match margins {
-        Some(m) => LayoutConfig {
-            gap,
-            margin_top: m.top.or(margin_top),
-            margin_right: m.right.or(margin_right),
-            margin_bottom: m.bottom.or(margin_bottom),
-            margin_left: m.left.or(margin_left),
-            default_float_ratio,
-        },
-        None => LayoutConfig {
-            gap,
-            margin_top,
-            margin_right,
-            margin_bottom,
-            margin_left,
-            default_float_ratio,
-        },
+    LayoutConfig {
+        gap,
+        margin_top: margins.top,
+        margin_right: margins.right,
+        margin_bottom: margins.bottom,
+        margin_left: margins.left,
+        default_float_ratio,
+        preview_border_color,
+        preview_border_width,
     }
 }
 
