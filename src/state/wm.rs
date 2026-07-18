@@ -1573,4 +1573,65 @@ mod tests {
             "OutputNameUpdated did not store the name"
         );
     }
+
+    #[test]
+    fn fullscreen_scene_uses_full_output_rect_with_layer_shell_zone() {
+        // When a layer-shell surface reserves an exclusive zone
+        // (e.g. a top bar), the scene must record the full output rect for
+        // fullscreen windows, not the shrunken tiling rect. This ensures
+        // exiting fullscreen correctly detects a rect change.
+        let mut state = WMState::new();
+        let o = OutputId(1);
+        let mut out = Output::new();
+        out.set_dimensions(1920, 1080);
+        out.set_non_exclusive_area(0, 40, 1920, 1040);
+        state.outputs.insert(o, out);
+        state.focused_output = Some(o);
+
+        let w = WindowId(1);
+        state.handle_event(Event::WindowCreated {
+            window_id: w,
+            target_output: o,
+        });
+
+        // Arrange the tree so node.rect is up-to-date before reading the scene.
+        if let Some(rect) = state.outputs.get(&o).and_then(|o| o.tiling_rect()) {
+            state.tree_for_output(o).unwrap().set_output_rect(rect);
+        }
+
+        // Tiled: scene rect should be the tiling area (shrunken by bar).
+        let scene = state.desired_scene();
+        let tiled_entry = scene.iter().find(|e| e.window_id == w).unwrap();
+        assert_eq!(
+            tiled_entry.rect,
+            crate::layout::Rect::new(0, 40, 1920, 1040),
+            "tiled window should use tiling rect"
+        );
+
+        // Enter fullscreen.
+        state.tree_for_output(o).unwrap().toggle_fullscreen(w.0);
+        if let Some(rect) = state.outputs.get(&o).and_then(|o| o.tiling_rect()) {
+            state.tree_for_output(o).unwrap().set_output_rect(rect);
+        }
+        let scene = state.desired_scene();
+        let fs_entry = scene.iter().find(|e| e.window_id == w).unwrap();
+        assert_eq!(
+            fs_entry.rect,
+            crate::layout::Rect::new(0, 0, 1920, 1080),
+            "fullscreen window should use full output rect"
+        );
+
+        // Exit fullscreen.
+        state.tree_for_output(o).unwrap().toggle_fullscreen(w.0);
+        if let Some(rect) = state.outputs.get(&o).and_then(|o| o.tiling_rect()) {
+            state.tree_for_output(o).unwrap().set_output_rect(rect);
+        }
+        let scene = state.desired_scene();
+        let restored_entry = scene.iter().find(|e| e.window_id == w).unwrap();
+        assert_eq!(
+            restored_entry.rect,
+            crate::layout::Rect::new(0, 40, 1920, 1040),
+            "restored tiled window should use tiling rect"
+        );
+    }
 }
