@@ -55,10 +55,22 @@ impl WMState {
                 continue;
             }
             let arranged = tree.arranged_windows_readonly();
+            let full_rect = self.outputs.get(output_id).and_then(|o| o.rect());
             for (window_id, window_rect, state) in arranged {
                 let window_id = WindowId(window_id);
                 let Some(window) = self.windows.get(&window_id) else {
                     continue;
+                };
+
+                // Fullscreen windows cover the whole physical output, so their
+                // scene rect must be the full output rect, not the tiling rect
+                // (which excludes layer-shell exclusive zones). This ensures
+                // exiting fullscreen correctly detects a rect change and emits
+                // ProposeDimensions / SetPosition to restore the tiled geometry.
+                let rect = if matches!(state, WindowState::Fullscreen { .. }) {
+                    full_rect.unwrap_or(window_rect)
+                } else {
+                    window_rect
                 };
 
                 let mode_priority = mode_priority(&state);
@@ -84,7 +96,7 @@ impl WMState {
                 scene.push(SceneEntry {
                     window_id,
                     output_id: *output_id,
-                    rect: window_rect,
+                    rect,
                     state,
                     z,
                     border,
