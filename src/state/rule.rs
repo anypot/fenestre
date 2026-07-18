@@ -121,7 +121,7 @@ mod tests {
         window.rules_applied = true;
 
         let mut tree = crate::layout::LayoutTree::new(Rect::new(0, 0, 1920, 1080));
-        tree.insert_window(1);
+        tree.insert_window(1, None);
 
         let rules = WindowRules::new(vec![test_rule(
             Some(RulePattern::exact("foot")),
@@ -143,7 +143,7 @@ mod tests {
         window.title = Some("Library".to_string());
 
         let mut tree = crate::layout::LayoutTree::new(Rect::new(0, 0, 1920, 1080));
-        tree.insert_window(1);
+        tree.insert_window(1, None);
 
         // General rule listed first, specific rule listed later. Both match;
         // the later rule overrides (River semantics).
@@ -181,7 +181,7 @@ mod tests {
         window.app_id = Some("firefox".to_string());
 
         let mut tree = crate::layout::LayoutTree::new(Rect::new(0, 0, 1920, 1080));
-        tree.insert_window(1);
+        tree.insert_window(1, None);
 
         let rules = WindowRules::new(vec![
             test_rule(

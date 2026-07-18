@@ -70,6 +70,7 @@ impl WMState {
         // fallback window so the now-focused output's tree focus matches global
         // focus (otherwise focus direction/stack bookkeeping diverges).
         if was_globally_focused {
+            self.pending_split = None;
             let next = new_layout_focus
                 .filter(|id| self.windows.contains_key(id))
                 .or_else(|| {
@@ -107,6 +108,7 @@ impl WMState {
             return;
         }
 
+        self.pending_split = None;
         self.push_focus(window_id);
         if let Some(output_id) = self.windows.get(&window_id).map(|w| w.output_id)
             && let Some(tree) = self.tree_for_output(output_id)
@@ -154,7 +156,10 @@ mod tests {
         state.focused_output = Some(output_id);
         let window = Window::new(window_id, output_id);
         state.windows.insert(window_id, window);
-        state.tree_for_output(output_id).unwrap().insert_window(1);
+        state
+            .tree_for_output(output_id)
+            .unwrap()
+            .insert_window(1, None);
         state.push_focus(window_id);
         state.request_manage_dirty();
 
@@ -173,8 +178,14 @@ mod tests {
         state.focused_output = Some(output_id);
         state.windows.insert(w1, Window::new(w1, output_id));
         state.windows.insert(w2, Window::new(w2, output_id));
-        state.tree_for_output(output_id).unwrap().insert_window(1);
-        state.tree_for_output(output_id).unwrap().insert_window(2);
+        state
+            .tree_for_output(output_id)
+            .unwrap()
+            .insert_window(1, None);
+        state
+            .tree_for_output(output_id)
+            .unwrap()
+            .insert_window(2, None);
 
         state.push_focus(w1);
         state.focus_window_id(w2);
@@ -196,9 +207,18 @@ mod tests {
         state.windows.insert(w1, Window::new(w1, output_id));
         state.windows.insert(w2, Window::new(w2, output_id));
         state.windows.insert(w3, Window::new(w3, output_id));
-        state.tree_for_output(output_id).unwrap().insert_window(1);
-        state.tree_for_output(output_id).unwrap().insert_window(2);
-        state.tree_for_output(output_id).unwrap().insert_window(3);
+        state
+            .tree_for_output(output_id)
+            .unwrap()
+            .insert_window(1, None);
+        state
+            .tree_for_output(output_id)
+            .unwrap()
+            .insert_window(2, None);
+        state
+            .tree_for_output(output_id)
+            .unwrap()
+            .insert_window(3, None);
 
         state.focus_window_id(w3);
         state.focus_window_id(w1);
@@ -230,8 +250,14 @@ mod tests {
         state.focused_output = Some(output_id);
         state.windows.insert(w1, Window::new(w1, output_id));
         state.windows.insert(w2, Window::new(w2, output_id));
-        state.tree_for_output(output_id).unwrap().insert_window(1);
-        state.tree_for_output(output_id).unwrap().insert_window(2);
+        state
+            .tree_for_output(output_id)
+            .unwrap()
+            .insert_window(1, None);
+        state
+            .tree_for_output(output_id)
+            .unwrap()
+            .insert_window(2, None);
 
         state.focus_window_id(w1);
 
@@ -251,7 +277,10 @@ mod tests {
         state.outputs.insert(output_id, Output::new());
         state.focused_output = Some(output_id);
         state.windows.insert(w1, Window::new(w1, output_id));
-        state.tree_for_output(output_id).unwrap().insert_window(1);
+        state
+            .tree_for_output(output_id)
+            .unwrap()
+            .insert_window(1, None);
         state.push_focus(w1);
         state.request_manage_dirty();
 
@@ -272,8 +301,8 @@ mod tests {
         let w2 = WindowId(2);
         state.windows.insert(w1, Window::new(w1, o1));
         state.windows.insert(w2, Window::new(w2, o2));
-        state.tree_for_output(o1).unwrap().insert_window(w1.0);
-        state.tree_for_output(o2).unwrap().insert_window(w2.0);
+        state.tree_for_output(o1).unwrap().insert_window(w1.0, None);
+        state.tree_for_output(o2).unwrap().insert_window(w2.0, None);
         state.push_focus(w1);
 
         state.focus_window_id(w2);
@@ -293,7 +322,7 @@ mod tests {
         let c = WindowId(3);
         for w in [a, b, c] {
             state.windows.insert(w, Window::new(w, o1));
-            state.tree_for_output(o1).unwrap().insert_window(w.0);
+            state.tree_for_output(o1).unwrap().insert_window(w.0, None);
             state.push_focus(w);
         }
         assert_eq!(state.focused_tree().unwrap().focused_window(), Some(3));
@@ -335,7 +364,7 @@ mod tests {
         let b = WindowId(2);
         let c = WindowId(3);
         state.windows.insert(a, Window::new(a, o1));
-        state.tree_for_output(o1).unwrap().insert_window(a.0);
+        state.tree_for_output(o1).unwrap().insert_window(a.0, None);
         state.focus_window_id(a);
         assert_eq!(state.focused_window, Some(a));
         assert_eq!(state.focused_output, Some(o1));
@@ -343,7 +372,7 @@ mod tests {
         // Two windows on the other output, with C last focused there.
         for w in [b, c] {
             state.windows.insert(w, Window::new(w, o2));
-            state.tree_for_output(o2).unwrap().insert_window(w.0);
+            state.tree_for_output(o2).unwrap().insert_window(w.0, None);
             state.push_focus(w);
         }
         state.focus_window_id(a); // re-assert global focus on o1
@@ -388,10 +417,10 @@ mod tests {
         let c = WindowId(3);
         for w in [a, b] {
             state.windows.insert(w, Window::new(w, o1));
-            state.tree_for_output(o1).unwrap().insert_window(w.0);
+            state.tree_for_output(o1).unwrap().insert_window(w.0, None);
         }
         state.windows.insert(c, Window::new(c, o2));
-        state.tree_for_output(o2).unwrap().insert_window(c.0);
+        state.tree_for_output(o2).unwrap().insert_window(c.0, None);
         state.focus_window_id(a);
         assert_eq!(state.focused_window, Some(a));
         assert_eq!(state.focused_output, Some(o1));
@@ -422,8 +451,8 @@ mod tests {
         let w2 = WindowId(2);
         state.windows.insert(w1, Window::new(w1, o1));
         state.windows.insert(w2, Window::new(w2, o1));
-        state.tree_for_output(o1).unwrap().insert_window(w1.0);
-        state.tree_for_output(o1).unwrap().insert_window(w2.0);
+        state.tree_for_output(o1).unwrap().insert_window(w1.0, None);
+        state.tree_for_output(o1).unwrap().insert_window(w2.0, None);
 
         // Establish focus on w1 (tree.focused == w1, state.focused_window == w1),
         // then simulate its output having been removed out from under us.
@@ -479,7 +508,7 @@ mod tests {
                 let id = WindowId(next);
                 next += 1;
                 state.windows.insert(id, Window::new(id, o1));
-                state.tree_for_output(o1).unwrap().insert_window(id.0);
+                state.tree_for_output(o1).unwrap().insert_window(id.0, None);
                 state.push_focus(id);
                 alive.push(id);
             }
@@ -572,7 +601,10 @@ mod tests {
                 next += 1;
                 let out = outputs[rng() % outputs.len()];
                 state.windows.insert(id, Window::new(id, out));
-                state.tree_for_output(out).unwrap().insert_window(id.0);
+                state
+                    .tree_for_output(out)
+                    .unwrap()
+                    .insert_window(id.0, None);
                 state.push_focus(id);
                 alive.push((out, id));
             }
@@ -648,8 +680,8 @@ mod tests {
         let b = WindowId(2);
         state.windows.insert(a, Window::new(a, o1));
         state.windows.insert(b, Window::new(b, o2));
-        state.tree_for_output(o1).unwrap().insert_window(a.0);
-        state.tree_for_output(o2).unwrap().insert_window(b.0);
+        state.tree_for_output(o1).unwrap().insert_window(a.0, None);
+        state.tree_for_output(o2).unwrap().insert_window(b.0, None);
 
         // Focus the window on o1, so o1 is the focused output.
         state.focus_window_id(a);
@@ -691,8 +723,8 @@ mod tests {
         let b = WindowId(2);
         state.windows.insert(a, Window::new(a, o1));
         state.windows.insert(b, Window::new(b, o2));
-        state.tree_for_output(o1).unwrap().insert_window(a.0);
-        state.tree_for_output(o2).unwrap().insert_window(b.0);
+        state.tree_for_output(o1).unwrap().insert_window(a.0, None);
+        state.tree_for_output(o2).unwrap().insert_window(b.0, None);
 
         // Focus the window on o2 (the output we will NOT remove).
         state.focus_window_id(b);
@@ -736,7 +768,7 @@ mod tests {
         // Only window on o1, and globally focused.
         let a = WindowId(1);
         state.windows.insert(a, Window::new(a, o1));
-        state.tree_for_output(o1).unwrap().insert_window(a.0);
+        state.tree_for_output(o1).unwrap().insert_window(a.0, None);
         state.push_focus(a);
 
         // Two windows on o2; C is the last focused there (remembered fallback).
@@ -744,7 +776,7 @@ mod tests {
         let c = WindowId(3);
         for w in [b, c] {
             state.windows.insert(w, Window::new(w, o2));
-            state.tree_for_output(o2).unwrap().insert_window(w.0);
+            state.tree_for_output(o2).unwrap().insert_window(w.0, None);
             state.push_focus(w);
         }
 
@@ -790,7 +822,7 @@ mod tests {
 
         let a = WindowId(1);
         state.windows.insert(a, Window::new(a, o1));
-        state.tree_for_output(o1).unwrap().insert_window(a.0);
+        state.tree_for_output(o1).unwrap().insert_window(a.0, None);
         state.focus_window_id(a);
         assert_eq!(state.focused_window, Some(a));
 
@@ -802,5 +834,47 @@ mod tests {
         );
         assert_eq!(state.pending_focus, None, "pending focus should clear");
         assert!(!state.windows.contains_key(&a));
+    }
+
+    #[test]
+    fn focus_window_id_clears_pending_split() {
+        let mut state = WMState::new();
+        let o1 = OutputId(1);
+        state.outputs.insert(o1, Output::new());
+        state.focused_output = Some(o1);
+        let w1 = WindowId(1);
+        let w2 = WindowId(2);
+        state.windows.insert(w1, Window::new(w1, o1));
+        state.windows.insert(w2, Window::new(w2, o1));
+        state.tree_for_output(o1).unwrap().insert_window(1, None);
+        state.tree_for_output(o1).unwrap().insert_window(2, None);
+        state.focus_window_id(w1);
+        state.pending_split = Some(crate::layout::SplitDirection::Right);
+
+        state.focus_window_id(w2);
+
+        assert_eq!(state.pending_split, None);
+        assert_eq!(state.focused_window, Some(w2));
+    }
+
+    #[test]
+    fn closing_focused_window_clears_pending_split() {
+        let mut state = WMState::new();
+        let o1 = OutputId(1);
+        state.outputs.insert(o1, Output::new());
+        state.focused_output = Some(o1);
+        let a = WindowId(1);
+        let b = WindowId(2);
+        state.windows.insert(a, Window::new(a, o1));
+        state.windows.insert(b, Window::new(b, o1));
+        state.tree_for_output(o1).unwrap().insert_window(a.0, None);
+        state.tree_for_output(o1).unwrap().insert_window(b.0, None);
+        state.focus_window_id(a);
+        state.pending_split = Some(crate::layout::SplitDirection::Down);
+
+        state.close_window_focus_reconcile(a);
+
+        assert_eq!(state.pending_split, None);
+        assert_eq!(state.focused_window, Some(b));
     }
 }

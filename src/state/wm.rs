@@ -59,6 +59,9 @@ pub(crate) struct WMState {
     /// Window IDs to close during the next manage sequence.
     pub(super) pending_closes: Vec<WindowId>,
 
+    /// Pending split direction for the next spawned window.
+    pub(super) pending_split: Option<crate::layout::SplitDirection>,
+
     /// Cached sorted window IDs for render stacking order.
     ///
     /// Owned by the scene module — mutate via `apply_manage` / `apply_render`.
@@ -126,6 +129,7 @@ impl WMState {
             window_rules: None,
             pending_focus: None,
             pending_closes: Vec::new(),
+            pending_split: None,
 
             next_window_id: WindowId(0),
             next_output_id: OutputId(0),
@@ -420,8 +424,9 @@ impl WMState {
                 let window = Window::new(window_id, target_output);
                 self.windows.insert(window_id, window);
                 self.index_window_in_output(window_id, target_output);
+                let pending_split = self.pending_split.take();
                 self.ensure_tree_for_output(target_output)
-                    .insert_window(window_id.0);
+                    .insert_window(window_id.0, pending_split);
                 self.push_focus(window_id);
                 self.pending_focus = Some(window_id);
                 self.request_manage_dirty();
@@ -509,6 +514,10 @@ impl WMState {
                 if let Some((_, tree)) = self.tree_for_window_id(window_id)
                     && tree.toggle_fullscreen(window_id.0)
                 {
+                    if self.focused_window == Some(window_id) {
+                        self.pending_split = None;
+                        self.render_order_cache.clear();
+                    }
                     self.request_manage_dirty();
                 }
             }
@@ -516,6 +525,10 @@ impl WMState {
                 if let Some((_, tree)) = self.tree_for_window_id(window_id)
                     && tree.toggle_fullscreen(window_id.0)
                 {
+                    if self.focused_window == Some(window_id) {
+                        self.pending_split = None;
+                        self.render_order_cache.clear();
+                    }
                     self.request_manage_dirty();
                 }
             }
@@ -607,8 +620,8 @@ mod tests {
         let w2 = WindowId(2);
         state.windows.insert(w1, Window::new(w1, o1));
         state.windows.insert(w2, Window::new(w2, o2));
-        state.tree_for_output(o1).unwrap().insert_window(w1.0);
-        state.tree_for_output(o2).unwrap().insert_window(w2.0);
+        state.tree_for_output(o1).unwrap().insert_window(w1.0, None);
+        state.tree_for_output(o2).unwrap().insert_window(w2.0, None);
 
         assert_eq!(state.tree_for_output(o1).unwrap().focused_window(), Some(1));
         assert_eq!(state.tree_for_output(o2).unwrap().focused_window(), Some(2));
@@ -632,7 +645,7 @@ mod tests {
 
         let w1 = WindowId(1);
         state.windows.insert(w1, Window::new(w1, o1));
-        state.tree_for_output(o1).unwrap().insert_window(w1.0);
+        state.tree_for_output(o1).unwrap().insert_window(w1.0, None);
 
         state
             .tree_for_output(o1)
@@ -655,7 +668,7 @@ mod tests {
 
         let w = WindowId(1);
         state.windows.insert(w, Window::new(w, o));
-        state.tree_for_output(o).unwrap().insert_window(w.0);
+        state.tree_for_output(o).unwrap().insert_window(w.0, None);
         state.focused_window = Some(w);
 
         // Spawn pseudo-tiled at the output fraction.

@@ -48,6 +48,10 @@ pub struct RawLayout {
     pub margins: Option<parser::RawMargins>,
     #[serde(default)]
     pub default_float_ratio: Option<f32>,
+    #[serde(default, deserialize_with = "de_preview_border_color")]
+    pub preview_border_color: Option<u32>,
+    #[serde(default, deserialize_with = "de_preview_border_width")]
+    pub preview_border_width: Option<i32>,
 }
 
 /// Intermediate representation of a window rule.
@@ -143,6 +147,15 @@ named_opt_de!(de_resize_delta_ratio, "resize_delta_ratio", f64);
 named_opt_de!(de_resize_delta_percent, "resize_delta_percent", f32);
 named_opt_de!(de_app_id, "app_id", UnresolvedPattern);
 named_opt_de!(de_title, "title", UnresolvedPattern);
+named_opt_de!(de_preview_border_color, "preview_border_color", u32);
+fn de_preview_border_width<'de, D>(deserializer: D) -> std::result::Result<Option<i32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value: Option<i32> = Option::deserialize(deserializer)
+        .map_err(|e| serde::de::Error::custom(format!("invalid preview_border_width: {e}")))?;
+    Ok(value.map(|v| v.clamp(0, 100)))
+}
 
 /// `deserialize_with` helper that names the rule `mode` field in errors.
 fn de_rule_mode<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
@@ -192,14 +205,19 @@ pub fn build_config(raw: RawConfig) -> Result<Config> {
 fn build_raw_layout(raw: RawLayout) -> Result<LayoutConfig> {
     let default_float_ratio = validate_ratio("default_float_ratio", raw.default_float_ratio)?;
 
+    let nested = raw.margins.unwrap_or_default();
+
     Ok(parser::build_layout(
         raw.gap,
-        raw.margin_top,
-        raw.margin_right,
-        raw.margin_bottom,
-        raw.margin_left,
-        raw.margins,
+        parser::RawMargins {
+            top: nested.top.or(raw.margin_top),
+            right: nested.right.or(raw.margin_right),
+            bottom: nested.bottom.or(raw.margin_bottom),
+            left: nested.left.or(raw.margin_left),
+        },
         default_float_ratio,
+        raw.preview_border_color,
+        raw.preview_border_width,
     ))
 }
 
@@ -367,6 +385,8 @@ mod tests {
                 margin_left: None,
                 margins: None,
                 default_float_ratio: None,
+                preview_border_color: None,
+                preview_border_width: None,
             }),
             decorations: Some(true),
             border_width: Some(2),
@@ -402,6 +422,8 @@ mod tests {
                 margin_left: None,
                 margins: None,
                 default_float_ratio: Some(2.0),
+                preview_border_color: None,
+                preview_border_width: None,
             }),
             decorations: None,
             border_width: None,

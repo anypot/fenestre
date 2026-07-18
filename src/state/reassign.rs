@@ -166,7 +166,7 @@ impl WMState {
         let to_tree = self.tree_for_output(to).expect("destination tree exists");
         let remembered = to_tree.focused_window();
         for win_id in window_ids {
-            to_tree.insert_window(*win_id);
+            to_tree.insert_window(*win_id, None);
         }
         for win_id in window_ids {
             if let Some(plan) = plans.get(win_id) {
@@ -247,7 +247,7 @@ mod tests {
 
         let w1 = WindowId(1);
         state.windows.insert(w1, Window::new(w1, o1));
-        state.tree_for_output(o1).unwrap().insert_window(w1.0);
+        state.tree_for_output(o1).unwrap().insert_window(w1.0, None);
 
         state.reassign_output(o1, o2);
         assert_eq!(state.windows.get(&w1).unwrap().output_id, o2);
@@ -282,8 +282,8 @@ mod tests {
         let b = WindowId(2);
         state.windows.insert(a, Window::new(a, o2));
         state.windows.insert(b, Window::new(b, o2));
-        state.tree_for_output(o2).unwrap().insert_window(a.0);
-        state.tree_for_output(o2).unwrap().insert_window(b.0);
+        state.tree_for_output(o2).unwrap().insert_window(a.0, None);
+        state.tree_for_output(o2).unwrap().insert_window(b.0, None);
         // Make A the remembered focus on o2.
         state.tree_for_output(o2).unwrap().focus_window(a.0);
         assert_eq!(
@@ -294,12 +294,12 @@ mod tests {
         // `o1` has a window X that we will reassign into o2.
         let x = WindowId(3);
         state.windows.insert(x, Window::new(x, o1));
-        state.tree_for_output(o1).unwrap().insert_window(x.0);
+        state.tree_for_output(o1).unwrap().insert_window(x.0, None);
 
         // Global focus is on o3 (a third output), unrelated to the move.
         let c = WindowId(4);
         state.windows.insert(c, Window::new(c, o3));
-        state.tree_for_output(o3).unwrap().insert_window(c.0);
+        state.tree_for_output(o3).unwrap().insert_window(c.0, None);
         state.focus_window_id(c);
         assert_eq!(state.focused_window, Some(c));
         assert_eq!(state.focused_output, Some(o3));
@@ -331,7 +331,7 @@ mod tests {
 
         let w1 = WindowId(1);
         state.windows.insert(w1, Window::new(w1, o1));
-        state.tree_for_output(o1).unwrap().insert_window(w1.0);
+        state.tree_for_output(o1).unwrap().insert_window(w1.0, None);
         state.push_focus(w1);
         state.focused_output = Some(o1);
 
@@ -355,7 +355,7 @@ mod tests {
         let w1 = WindowId(1);
         state.windows.insert(w1, Window::new(w1, o1));
         let tree = state.tree_for_output(o1).unwrap();
-        tree.insert_window(w1.0);
+        tree.insert_window(w1.0, None);
         let rect = crate::layout::Rect::new(0, 0, 100, 100);
         tree.toggle_pseudo_tiled(w1.0, rect);
         tree.toggle_fullscreen(w1.0);
@@ -404,7 +404,7 @@ mod tests {
         let c = WindowId(3);
         for w in [a, b, c] {
             state.windows.insert(w, Window::new(w, o1));
-            state.tree_for_output(o1).unwrap().insert_window(w.0);
+            state.tree_for_output(o1).unwrap().insert_window(w.0, None);
             state.push_focus(w);
         }
 
@@ -455,7 +455,7 @@ mod tests {
         let c = WindowId(3);
         for w in [a, b, c] {
             state.windows.insert(w, Window::new(w, o1));
-            state.tree_for_output(o1).unwrap().insert_window(w.0);
+            state.tree_for_output(o1).unwrap().insert_window(w.0, None);
             state.push_focus(w);
         }
 
@@ -509,7 +509,7 @@ mod tests {
         let full = WindowId(4);
         for w in [tiled, floating, pseudo, full] {
             state.windows.insert(w, Window::new(w, o1));
-            state.tree_for_output(o1).unwrap().insert_window(w.0);
+            state.tree_for_output(o1).unwrap().insert_window(w.0, None);
             state.push_focus(w);
         }
 
@@ -593,7 +593,7 @@ mod tests {
         let w = WindowId(1);
         state.windows.insert(w, Window::new(w, o1));
         let tree = state.tree_for_output(o1).unwrap();
-        tree.insert_window(w.0);
+        tree.insert_window(w.0, None);
         let float_rect = crate::layout::Rect::new(200, 150, 500, 400);
         tree.toggle_floating(w.0, float_rect);
         tree.toggle_fullscreen(w.0);
@@ -640,7 +640,7 @@ mod tests {
         let w = WindowId(1);
         state.windows.insert(w, Window::new(w, o1));
         let tree = state.tree_for_output(o1).unwrap();
-        tree.insert_window(w.0);
+        tree.insert_window(w.0, None);
         let rect = crate::layout::Rect::new(0, 0, 100, 100);
         tree.toggle_pseudo_tiled(w.0, rect);
         tree.toggle_fullscreen(w.0);
@@ -692,7 +692,7 @@ mod tests {
         let floating = WindowId(1);
         state.windows.insert(floating, Window::new(floating, o1));
         let tree = state.tree_for_output(o1).unwrap();
-        tree.insert_window(floating.0);
+        tree.insert_window(floating.0, None);
         let src_rect = crate::layout::Rect::new(100, 50, 400, 300);
         tree.toggle_floating(floating.0, src_rect);
         state.push_focus(floating);

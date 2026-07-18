@@ -116,6 +116,9 @@ scannable — move detailed explanations into `docs/`, not into this file.
 - `wayland-client` event_created_child is used for River child objects;
   manual child data hashing is commented out in `handlers.rs`.
 - `render_order_cache` must be cleared on any structural change to windows or focus.
+- River's drawBorders uses a zero-size workaround for disabled edges — Zig 0.16.0
+  ReleaseSafe elides wlr_scene_node_setEnabled(false) extern calls when the struct
+  field binding appears dead after store.
 - `ensure_focused_output` falls back to the first output if none is focused yet.
 
 ## Important Invariants

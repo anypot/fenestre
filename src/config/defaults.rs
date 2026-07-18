@@ -30,7 +30,11 @@ fn binding(
 pub fn defaults() -> Config {
     let decorations = true;
     Config {
-        layout: LayoutConfig::default(),
+        layout: LayoutConfig {
+            preview_border_color: Some(0xff00ff00),
+            preview_border_width: Some(2),
+            ..LayoutConfig::default()
+        },
         decorations,
         border_width: None,
         border_color_focused: Some(0xffffffff),
@@ -217,6 +221,24 @@ pub fn defaults() -> Config {
                 KEY_l,
                 SUPER | CTRL,
                 Command::FocusOutputRight,
+            ),
+            binding(
+                KeyBindingTarget::Primary,
+                KEY_v,
+                SUPER,
+                Command::TogglePendingSplitVertical,
+            ),
+            binding(
+                KeyBindingTarget::Primary,
+                KEY_v,
+                SUPER | SHIFT,
+                Command::TogglePendingSplitHorizontal,
+            ),
+            binding(
+                KeyBindingTarget::Primary,
+                KEY_Escape,
+                SUPER,
+                Command::CancelPendingSplit,
             ),
         ],
         rules: Vec::new(),

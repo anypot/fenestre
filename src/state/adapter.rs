@@ -162,6 +162,13 @@ impl WMState {
                 if let Some(window) = self.windows.get(&window_id)
                     && let Some(river_window) = window.river_window.as_ref()
                 {
+                    // NOTE: River's drawBorders in Window.zig uses a zero-size
+                    // workaround for disabled edges instead of calling
+                    // wlr_scene_node_setEnabled(false) directly. This avoids a
+                    // Zig 0.16.0 ReleaseSafe optimizer bug where extern C fn
+                    // calls to wlroots are elided when the field appears to be
+                    // dead (the zig-pkg struct binding reads @field(node,"enabled")
+                    // is never read through the Zig type before the next write).
                     let edges = crate::protocol::river::river_window_management_v1::client::river_window_v1::Edges::from_bits(edges).unwrap_or(crate::protocol::river::river_window_management_v1::client::river_window_v1::Edges::empty());
                     river_window.set_borders(edges, width, r, g, b, a);
                 }

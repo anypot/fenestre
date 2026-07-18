@@ -5,8 +5,10 @@ use crate::config::LayoutConfig;
 /// Axis along which a split divides its two children.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SplitDirection {
-    Vertical,
-    Horizontal,
+    Left,
+    Right,
+    Up,
+    Down,
 }
 
 /// Direction used for focus navigation, window moves, and resizes.
@@ -32,7 +34,7 @@ pub(crate) enum WindowState {
 }
 
 impl WindowState {
-    fn participates_in_tiling(&self) -> bool {
+    pub(crate) fn participates_in_tiling(&self) -> bool {
         matches!(self, Self::Tiled | Self::PseudoTiled { .. })
     }
 }
@@ -254,10 +256,21 @@ impl LayoutTree {
         );
     }
 
+    fn ordered_children(
+        direction: SplitDirection,
+        focused_node: Box<LayoutNode>,
+        new_leaf: LayoutNode,
+    ) -> (Box<LayoutNode>, Box<LayoutNode>) {
+        match direction {
+            SplitDirection::Right | SplitDirection::Down => (focused_node, Box::new(new_leaf)),
+            SplitDirection::Left | SplitDirection::Up => (Box::new(new_leaf), focused_node),
+        }
+    }
+
     /// Insert a window into the tree, splitting the focused node's rect.
     /// Arranges the tree first so the split direction reflects current geometry.
     /// Returns false if the window already exists.
-    pub(crate) fn insert_window(&mut self, id: u32) -> bool {
+    pub(crate) fn insert_window(&mut self, id: u32, preferred: Option<SplitDirection>) -> bool {
         if self.contains_window(id) {
             return false;
         }
@@ -278,13 +291,16 @@ impl LayoutTree {
         let Some(focused_node) = self.take_window_node(focused) else {
             return false;
         };
+        let direction = preferred.unwrap_or_else(|| self.split_direction(focused));
+        let (first_child, second_child) =
+            Self::ordered_children(direction, focused_node, LayoutNode::leaf(Some(id)));
         let parent = LayoutNode::split(
             LayoutSplit {
-                direction: self.split_direction(focused),
+                direction,
                 ratio: 0.5,
             },
-            focused_node,
-            Box::new(LayoutNode::leaf(Some(id))),
+            first_child,
+            second_child,
         );
         self.replace_window_node(focused, Box::new(parent));
         self.focused = Some(id);
@@ -296,12 +312,12 @@ impl LayoutTree {
         self.node_rect(id)
             .map(|rect| {
                 if rect.width >= rect.height {
-                    SplitDirection::Vertical
+                    SplitDirection::Right
                 } else {
-                    SplitDirection::Horizontal
+                    SplitDirection::Down
                 }
             })
-            .unwrap_or(SplitDirection::Vertical)
+            .unwrap_or(SplitDirection::Right)
     }
 
     /// Split the focused window into two, inserting a placeholder.
@@ -314,13 +330,16 @@ impl LayoutTree {
         let placeholder_id = self.next_id;
         self.next_id += 1;
 
+        let (first_child, second_child) =
+            Self::ordered_children(direction, focused_node, LayoutNode::leaf(None));
+
         let parent = LayoutNode::split(
             LayoutSplit {
                 direction,
                 ratio: 0.5,
             },
-            focused_node,
-            Box::new(LayoutNode::leaf(None)),
+            first_child,
+            second_child,
         );
         self.replace_window_node(focused, Box::new(parent))
             .then_some(placeholder_id)
@@ -614,19 +633,19 @@ impl LayoutTree {
             return false;
         };
 
-        let Some((split, is_first)) = self.find_parent_split(focused) else {
+        let Some(split) = self.find_parent_split(focused) else {
             return false;
         };
 
-        let ratio_delta = match (split.direction, is_first, direction) {
-            (SplitDirection::Vertical, true, FocusDirection::Right) => delta,
-            (SplitDirection::Vertical, true, FocusDirection::Left) => -delta,
-            (SplitDirection::Vertical, false, FocusDirection::Left) => -delta,
-            (SplitDirection::Vertical, false, FocusDirection::Right) => delta,
-            (SplitDirection::Horizontal, true, FocusDirection::Down) => delta,
-            (SplitDirection::Horizontal, true, FocusDirection::Up) => -delta,
-            (SplitDirection::Horizontal, false, FocusDirection::Up) => -delta,
-            (SplitDirection::Horizontal, false, FocusDirection::Down) => delta,
+        let ratio_delta = match (split.direction, direction) {
+            (SplitDirection::Right, FocusDirection::Right) => delta,
+            (SplitDirection::Right, FocusDirection::Left) => -delta,
+            (SplitDirection::Left, FocusDirection::Right) => -delta,
+            (SplitDirection::Left, FocusDirection::Left) => delta,
+            (SplitDirection::Down, FocusDirection::Down) => delta,
+            (SplitDirection::Down, FocusDirection::Up) => -delta,
+            (SplitDirection::Up, FocusDirection::Down) => -delta,
+            (SplitDirection::Up, FocusDirection::Up) => delta,
             _ => return false,
         };
 
@@ -676,10 +695,10 @@ impl LayoutTree {
             let split_supports_direction = matches!(
                 (node.split.as_ref()?.direction, direction),
                 (
-                    SplitDirection::Vertical,
+                    SplitDirection::Left | SplitDirection::Right,
                     FocusDirection::Left | FocusDirection::Right
                 ) | (
-                    SplitDirection::Horizontal,
+                    SplitDirection::Up | SplitDirection::Down,
                     FocusDirection::Up | FocusDirection::Down
                 )
             );
@@ -775,17 +794,17 @@ impl LayoutTree {
         true
     }
 
-    fn find_parent_split(&mut self, target: u32) -> Option<(&mut LayoutSplit, bool)> {
-        fn find(node: &mut LayoutNode, target: u32) -> Option<(&mut LayoutSplit, bool)> {
+    fn find_parent_split(&mut self, target: u32) -> Option<&mut LayoutSplit> {
+        fn find(node: &mut LayoutNode, target: u32) -> Option<&mut LayoutSplit> {
             if let Some((first, second)) = node.children.as_mut() {
                 let in_first = contains_window(first, target);
                 let in_second = contains_window(second, target);
 
                 if in_first && first.window == Some(target) {
-                    return Some((node.split.as_mut().unwrap(), true));
+                    return Some(node.split.as_mut().unwrap());
                 }
                 if in_second && second.window == Some(target) {
-                    return Some((node.split.as_mut().unwrap(), false));
+                    return Some(node.split.as_mut().unwrap());
                 }
 
                 if in_first {
@@ -1167,7 +1186,7 @@ fn split_rect(rect: Rect, direction: SplitDirection, ratio: f64, gap: i32) -> (R
     let ratio = ratio.clamp(0.1, 0.9);
 
     match direction {
-        SplitDirection::Vertical => {
+        SplitDirection::Left | SplitDirection::Right => {
             let available = (rect.width - gap).max(0);
             let first_width = ((available as f64) * ratio)
                 .floor()
@@ -1181,7 +1200,7 @@ fn split_rect(rect: Rect, direction: SplitDirection, ratio: f64, gap: i32) -> (R
             );
             (first, second)
         }
-        SplitDirection::Horizontal => {
+        SplitDirection::Up | SplitDirection::Down => {
             let available = (rect.height - gap).max(0);
             let first_height = ((available as f64) * ratio)
                 .floor()
@@ -1364,7 +1383,7 @@ mod tests {
     fn empty_tree_inserts_first_window_as_root_and_focuses_it() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 100, 100));
 
-        assert!(layout.insert_window(1));
+        assert!(layout.insert_window(1, None));
 
         assert_eq!(layout.focused_window(), Some(1));
         assert_eq!(layout.root_window(), Some(1));
@@ -1374,15 +1393,15 @@ mod tests {
     #[test]
     fn longest_side_split_chooses_vertical_for_wide_rectangles() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 100));
-        layout.insert_window(1);
+        layout.insert_window(1, None);
         layout.arrange();
 
-        layout.insert_window(2);
+        layout.insert_window(2, None);
 
         let root = layout.root.as_ref().unwrap();
         assert_eq!(
             root.split.as_ref().unwrap().direction,
-            SplitDirection::Vertical
+            SplitDirection::Right
         );
         assert_eq!(
             visible(&layout),
@@ -1396,16 +1415,13 @@ mod tests {
     #[test]
     fn longest_side_split_chooses_horizontal_for_tall_rectangles() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 100, 1000));
-        layout.insert_window(1);
+        layout.insert_window(1, None);
         layout.arrange();
 
-        layout.insert_window(2);
+        layout.insert_window(2, None);
 
         let root = layout.root.as_ref().unwrap();
-        assert_eq!(
-            root.split.as_ref().unwrap().direction,
-            SplitDirection::Horizontal
-        );
+        assert_eq!(root.split.as_ref().unwrap().direction, SplitDirection::Down);
         assert_eq!(
             visible(&layout),
             vec![
@@ -1418,27 +1434,57 @@ mod tests {
     #[test]
     fn manual_vertical_split_creates_vertical_parent_with_focused_and_empty_leaf() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 100));
-        layout.insert_window(1);
+        layout.insert_window(1, None);
         layout.arrange();
 
-        let placeholder = layout.split_focused(SplitDirection::Vertical).unwrap();
+        let placeholder = layout.split_focused(SplitDirection::Right).unwrap();
 
         assert_eq!(placeholder, 0);
         let root = layout.root.as_ref().unwrap();
         assert_eq!(
             root.split.as_ref().unwrap().direction,
-            SplitDirection::Vertical
+            SplitDirection::Right
         );
         assert_eq!(root.first_child().unwrap().window, Some(1));
         assert_eq!(root.second_child().unwrap().window, None);
     }
 
     #[test]
+    fn manual_left_split_creates_vertical_parent_with_placeholder_and_focused_leaf() {
+        let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 100));
+        layout.insert_window(1, None);
+        layout.arrange();
+
+        let placeholder = layout.split_focused(SplitDirection::Left).unwrap();
+
+        assert_eq!(placeholder, 0);
+        let root = layout.root.as_ref().unwrap();
+        assert_eq!(root.split.as_ref().unwrap().direction, SplitDirection::Left);
+        assert_eq!(root.first_child().unwrap().window, None);
+        assert_eq!(root.second_child().unwrap().window, Some(1));
+    }
+
+    #[test]
+    fn manual_up_split_creates_horizontal_parent_with_placeholder_and_focused_leaf() {
+        let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 1000));
+        layout.insert_window(1, None);
+        layout.arrange();
+
+        let placeholder = layout.split_focused(SplitDirection::Up).unwrap();
+
+        assert_eq!(placeholder, 0);
+        let root = layout.root.as_ref().unwrap();
+        assert_eq!(root.split.as_ref().unwrap().direction, SplitDirection::Up);
+        assert_eq!(root.first_child().unwrap().window, None);
+        assert_eq!(root.second_child().unwrap().window, Some(1));
+    }
+
+    #[test]
     fn remove_leaf_collapses_parent_into_sibling() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 100));
-        layout.insert_window(1);
-        layout.insert_window(2);
-        layout.insert_window(3);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
+        layout.insert_window(3, None);
         layout.arrange();
 
         layout.focus_window(2);
@@ -1457,7 +1503,7 @@ mod tests {
     #[test]
     fn remove_last_leaf_leaves_empty_tree() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 100, 100));
-        layout.insert_window(1);
+        layout.insert_window(1, None);
 
         assert!(layout.remove_window(1));
 
@@ -1469,9 +1515,9 @@ mod tests {
     #[test]
     fn next_and_previous_traverse_tiled_windows() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 100));
-        layout.insert_window(1);
-        layout.insert_window(2);
-        layout.insert_window(3);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
+        layout.insert_window(3, None);
 
         // insert_window focuses the newly inserted window, so the last
         // window is focused after the third insert.
@@ -1486,9 +1532,9 @@ mod tests {
     #[test]
     fn focus_direction_includes_floating_windows() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 100));
-        layout.insert_window(1);
-        layout.insert_window(2);
-        layout.insert_window(3);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
+        layout.insert_window(3, None);
         layout.arrange();
 
         // Window 1 is at x=0..500, window 3 at x=750..1000.
@@ -1515,9 +1561,9 @@ mod tests {
             ..LayoutConfig::default()
         });
 
-        layout.insert_window(1);
-        layout.insert_window(2);
-        layout.insert_window(3);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
+        layout.insert_window(3, None);
         layout.arrange();
 
         // Focus window 1, then move right — should reach window 2, not skip to 3
@@ -1539,8 +1585,8 @@ mod tests {
     #[test]
     fn fullscreen_window_bypasses_tiling_space() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 100));
-        layout.insert_window(1);
-        layout.insert_window(2);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
         layout.arrange();
 
         assert!(layout.toggle_fullscreen(1));
@@ -1557,8 +1603,8 @@ mod tests {
     #[test]
     fn output_resize_recomputes_rectangles_without_changing_topology() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 100));
-        layout.insert_window(1);
-        layout.insert_window(2);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
         layout.arrange();
 
         layout.set_output_rect(Rect::new(0, 0, 2000, 200));
@@ -1575,10 +1621,10 @@ mod tests {
     #[test]
     fn placeholder_is_replaced_by_next_inserted_window_and_becomes_focused() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 100));
-        layout.insert_window(1);
-        layout.split_focused(SplitDirection::Vertical).unwrap();
+        layout.insert_window(1, None);
+        layout.split_focused(SplitDirection::Right).unwrap();
 
-        assert!(layout.insert_window(2));
+        assert!(layout.insert_window(2, None));
 
         assert_eq!(layout.focused_window(), Some(2));
         assert_eq!(
@@ -1593,9 +1639,9 @@ mod tests {
     #[test]
     fn removing_focused_window_refocuses_first_remaining_window() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 100));
-        layout.insert_window(1);
-        layout.insert_window(2);
-        layout.insert_window(3);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
+        layout.insert_window(3, None);
         layout.arrange();
 
         layout.focus_window(2);
@@ -1614,7 +1660,7 @@ mod tests {
     #[test]
     fn toggle_floating_off_restores_tiled_state() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 100));
-        layout.insert_window(1);
+        layout.insert_window(1, None);
         layout.arrange();
 
         // Toggle floating on
@@ -1629,9 +1675,9 @@ mod tests {
     #[test]
     fn pseudo_tiled_window_is_centered_inside_its_tiling_slot() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 100));
-        layout.insert_window(1);
-        layout.insert_window(2);
-        layout.insert_window(3);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
+        layout.insert_window(3, None);
         layout.arrange();
 
         assert!(layout.toggle_pseudo_tiled(2, Rect::new(10, 10, 200, 50)));
@@ -1649,8 +1695,8 @@ mod tests {
     #[test]
     fn fullscreen_toggle_preserves_floating_state() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 100));
-        layout.insert_window(1);
-        layout.insert_window(2);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
         layout.arrange();
 
         assert!(layout.toggle_floating(1, Rect::new(10, 10, 200, 50)));
@@ -1669,8 +1715,8 @@ mod tests {
     #[test]
     fn fullscreen_toggle_preserves_pseudo_tiled_state() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 100));
-        layout.insert_window(1);
-        layout.insert_window(2);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
         layout.arrange();
 
         assert!(layout.toggle_pseudo_tiled(1, Rect::new(10, 10, 200, 50)));
@@ -1693,10 +1739,10 @@ mod tests {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 100));
 
         // Add 4 windows - each splits from the previously focused
-        layout.insert_window(1);
-        layout.insert_window(2);
-        layout.insert_window(3);
-        layout.insert_window(4);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
+        layout.insert_window(3, None);
+        layout.insert_window(4, None);
         layout.arrange();
 
         // Before removal: 4 windows sharing space
@@ -1752,9 +1798,9 @@ mod tests {
         // Test: spawn 4 windows, close window 2 (middle), verify remaining extend
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 100));
 
-        layout.insert_window(1);
-        layout.insert_window(2);
-        layout.insert_window(3);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
+        layout.insert_window(3, None);
         layout.arrange();
 
         // Tree: split(leaf(1), split(leaf(2), leaf(3))) with widths 250, 250, 500
@@ -1783,9 +1829,9 @@ mod tests {
     #[test]
     fn focus_direction_after_close_starts_from_correct_window() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 100));
-        layout.insert_window(1);
-        layout.insert_window(2);
-        layout.insert_window(3);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
+        layout.insert_window(3, None);
         layout.arrange();
 
         // Focus window 3
@@ -1805,10 +1851,10 @@ mod tests {
     #[test]
     fn spawn_four_windows_then_toggle_floating_on_last_does_not_break_first() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 100));
-        layout.insert_window(1);
-        layout.insert_window(2);
-        layout.insert_window(3);
-        layout.insert_window(4);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
+        layout.insert_window(3, None);
+        layout.insert_window(4, None);
         layout.arrange();
 
         // Simulate what push_focus does in handlers.rs: only update
@@ -1846,8 +1892,8 @@ mod tests {
             ..LayoutConfig::default()
         });
 
-        layout.insert_window(1);
-        layout.insert_window(2);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
         layout.arrange();
 
         let visible = visible(&layout);
@@ -1875,7 +1921,7 @@ mod tests {
             ..LayoutConfig::default()
         });
 
-        layout.insert_window(1);
+        layout.insert_window(1, None);
         layout.arrange();
 
         let visible = visible(&layout);
@@ -1900,10 +1946,12 @@ mod tests {
             margin_bottom: Some(5),
             margin_left: Some(10),
             default_float_ratio: None,
+            preview_border_color: None,
+            preview_border_width: None,
         });
 
-        layout.insert_window(1);
-        layout.insert_window(2);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
         layout.arrange();
 
         let visible = visible(&layout);
@@ -1925,8 +1973,8 @@ mod tests {
     #[test]
     fn swap_windows_exchanges_positions_of_two_tiled_windows() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 100));
-        layout.insert_window(1);
-        layout.insert_window(2);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
         layout.arrange();
 
         layout.focus_window(1);
@@ -1945,7 +1993,7 @@ mod tests {
     #[test]
     fn swap_windows_returns_false_when_no_target_exists() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 100));
-        layout.insert_window(1);
+        layout.insert_window(1, None);
         layout.arrange();
 
         layout.focus_window(1);
@@ -1955,7 +2003,7 @@ mod tests {
     #[test]
     fn swap_windows_returns_false_with_single_window() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 100));
-        layout.insert_window(1);
+        layout.insert_window(1, None);
         layout.arrange();
 
         layout.focus_window(1);
@@ -1965,8 +2013,8 @@ mod tests {
     #[test]
     fn move_floating_window_updates_floating_rect() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 1000));
-        layout.insert_window(1);
-        layout.insert_window(2);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
         layout.arrange();
 
         assert!(layout.toggle_floating(2, Rect::new(10, 10, 200, 50)));
@@ -1986,8 +2034,8 @@ mod tests {
     #[test]
     fn resize_vertical_split_first_child_expand_right() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 100));
-        layout.insert_window(1);
-        layout.insert_window(2);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
         layout.arrange();
 
         layout.focus_window(1);
@@ -2019,8 +2067,8 @@ mod tests {
     #[test]
     fn resize_vertical_split_first_child_shrink_left() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 100));
-        layout.insert_window(1);
-        layout.insert_window(2);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
         layout.arrange();
 
         layout.focus_window(1);
@@ -2052,8 +2100,8 @@ mod tests {
     #[test]
     fn resize_horizontal_split_first_child_expand_down() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 100, 1000));
-        layout.insert_window(1);
-        layout.insert_window(2);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
         layout.arrange();
 
         layout.focus_window(1);
@@ -2085,8 +2133,8 @@ mod tests {
     #[test]
     fn resize_ratio_clamps_at_boundaries() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 100));
-        layout.insert_window(1);
-        layout.insert_window(2);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
         layout.arrange();
 
         layout.focus_window(1);
@@ -2106,8 +2154,8 @@ mod tests {
         );
 
         let mut layout2 = LayoutTree::new(Rect::new(0, 0, 1000, 100));
-        layout2.insert_window(1);
-        layout2.insert_window(2);
+        layout2.insert_window(1, None);
+        layout2.insert_window(2, None);
         layout2.arrange();
         layout2.focus_window(1);
         for _ in 0..20 {
@@ -2129,8 +2177,8 @@ mod tests {
     #[test]
     fn resize_floating_window_changes_dimensions() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 1000));
-        layout.insert_window(1);
-        layout.insert_window(2);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
         layout.arrange();
 
         assert!(layout.toggle_floating(2, Rect::new(10, 10, 200, 50)));
@@ -2148,8 +2196,8 @@ mod tests {
     #[test]
     fn resize_floating_window_shrink_left_shifts_position() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 1000));
-        layout.insert_window(1);
-        layout.insert_window(2);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
         layout.arrange();
 
         assert!(layout.toggle_floating(2, Rect::new(100, 100, 200, 50)));
@@ -2181,8 +2229,8 @@ mod tests {
     #[test]
     fn resize_floating_window_shrink_up_shifts_position() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 1000));
-        layout.insert_window(1);
-        layout.insert_window(2);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
         layout.arrange();
 
         assert!(layout.toggle_floating(2, Rect::new(100, 100, 200, 50)));
@@ -2214,8 +2262,8 @@ mod tests {
     #[test]
     fn resize_floating_window_expand_left_shifts_position() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 1000));
-        layout.insert_window(1);
-        layout.insert_window(2);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
         layout.arrange();
 
         assert!(layout.toggle_floating(2, Rect::new(200, 100, 200, 50)));
@@ -2247,8 +2295,8 @@ mod tests {
     #[test]
     fn resize_floating_window_expand_up_shifts_position() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 1000));
-        layout.insert_window(1);
-        layout.insert_window(2);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
         layout.arrange();
 
         assert!(layout.toggle_floating(2, Rect::new(100, 200, 200, 50)));
@@ -2280,7 +2328,7 @@ mod tests {
     #[test]
     fn resize_single_window_returns_false() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 100));
-        layout.insert_window(1);
+        layout.insert_window(1, None);
         layout.arrange();
 
         layout.focus_window(1);
@@ -2290,8 +2338,8 @@ mod tests {
     #[test]
     fn resize_vertical_split_second_child_expand_left() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 100));
-        layout.insert_window(1);
-        layout.insert_window(2);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
         layout.arrange();
 
         layout.focus_window(2);
@@ -2324,8 +2372,8 @@ mod tests {
     #[test]
     fn resize_vertical_split_second_child_shrink_right() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 100));
-        layout.insert_window(1);
-        layout.insert_window(2);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
         layout.arrange();
 
         layout.focus_window(2);
@@ -2358,8 +2406,8 @@ mod tests {
     #[test]
     fn resize_horizontal_split_second_child_expand_up() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 100, 1000));
-        layout.insert_window(1);
-        layout.insert_window(2);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
         layout.arrange();
 
         layout.focus_window(2);
@@ -2392,8 +2440,8 @@ mod tests {
     #[test]
     fn resize_horizontal_split_second_child_shrink_down() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 100, 1000));
-        layout.insert_window(1);
-        layout.insert_window(2);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
         layout.arrange();
 
         layout.focus_window(2);
@@ -2426,10 +2474,10 @@ mod tests {
     #[test]
     fn focus_to_resize_target_vertical_split_finds_horizontal_ancestor() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 1000));
-        layout.insert_window(1);
-        layout.insert_window(2);
-        layout.insert_window(3);
-        layout.insert_window(4);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
+        layout.insert_window(3, None);
+        layout.insert_window(4, None);
         layout.arrange();
 
         layout.focus_window(4);
@@ -2444,10 +2492,10 @@ mod tests {
         // Window 2's grandparent is a vertical split (supports Left/Right)
         // Focusing w2 and pressing Left should find the vertical ancestor's sibling = w1
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 1000));
-        layout.insert_window(1);
-        layout.insert_window(2);
-        layout.insert_window(3);
-        layout.insert_window(4);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
+        layout.insert_window(3, None);
+        layout.insert_window(4, None);
         layout.arrange();
 
         // Verify tree: w2 should be in a horizontal split (doesn't support Left)
@@ -2462,8 +2510,8 @@ mod tests {
     #[test]
     fn focus_to_resize_target_returns_none_when_no_ancestor_supports_direction() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 100));
-        layout.insert_window(1);
-        layout.insert_window(2);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
         layout.arrange();
 
         layout.focus_window(2);
@@ -2474,7 +2522,7 @@ mod tests {
     #[test]
     fn focus_to_resize_target_returns_none_at_root() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 1000));
-        layout.insert_window(1);
+        layout.insert_window(1, None);
         layout.arrange();
 
         layout.focus_window(1);
@@ -2485,10 +2533,10 @@ mod tests {
     #[test]
     fn focus_to_resize_target_skips_non_tiling_siblings() {
         let mut layout = LayoutTree::new(Rect::new(0, 0, 1000, 1000));
-        layout.insert_window(1);
-        layout.insert_window(2);
-        layout.insert_window(3);
-        layout.insert_window(4);
+        layout.insert_window(1, None);
+        layout.insert_window(2, None);
+        layout.insert_window(3, None);
+        layout.insert_window(4, None);
         layout.arrange();
 
         layout.focus_window(4);

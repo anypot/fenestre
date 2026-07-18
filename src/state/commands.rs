@@ -22,8 +22,19 @@ impl WMState {
             Command::FocusDown => self.focus_direction(FocusDirection::Down),
             Command::FocusLeft => self.focus_direction(FocusDirection::Left),
             Command::FocusRight => self.focus_direction(FocusDirection::Right),
-            Command::SplitVertical => self.split_vertical(),
-            Command::SplitHorizontal => self.split_horizontal(),
+            Command::SplitRight => self.split_focused(SplitDirection::Right),
+            Command::SplitLeft => self.split_focused(SplitDirection::Left),
+            Command::SplitDown => self.split_focused(SplitDirection::Down),
+            Command::SplitUp => self.split_focused(SplitDirection::Up),
+            Command::TogglePendingSplitVertical => self.toggle_pending_split(
+                (SplitDirection::Right, SplitDirection::Left),
+                SplitDirection::Right,
+            ),
+            Command::TogglePendingSplitHorizontal => self.toggle_pending_split(
+                (SplitDirection::Down, SplitDirection::Up),
+                SplitDirection::Down,
+            ),
+            Command::CancelPendingSplit => self.cancel_pending_split(),
             Command::ToggleFullscreen => self.toggle_focused_fullscreen(),
             Command::ToggleFloating => self.toggle_focused_floating(),
             Command::TogglePseudoTiled => self.toggle_focused_pseudo_tiled(),
@@ -81,21 +92,57 @@ impl WMState {
         }
     }
 
-    fn split_vertical(&mut self) {
+    fn split_focused(&mut self, direction: SplitDirection) {
         if self
             .focused_tree()
-            .is_some_and(|tree| tree.split_focused(SplitDirection::Vertical).is_some())
+            .is_some_and(|tree| tree.split_focused(direction).is_some())
         {
+            self.pending_split = None;
             self.request_manage_dirty();
         }
     }
 
-    fn split_horizontal(&mut self) {
-        if self
-            .focused_tree()
-            .is_some_and(|tree| tree.split_focused(SplitDirection::Horizontal).is_some())
-        {
+    fn toggle_pending_split(
+        &mut self,
+        directions: (SplitDirection, SplitDirection),
+        default: SplitDirection,
+    ) {
+        let Some(window_id) = self.focused_window else {
+            return;
+        };
+        let Some(tree) = self.focused_tree() else {
+            return;
+        };
+        let state = tree.window_state(window_id.0);
+        if !state.map(|s| s.participates_in_tiling()).unwrap_or(false) {
+            self.pending_split = None;
             self.request_manage_dirty();
+            return;
+        }
+        let (first, second) = directions;
+        self.pending_split = match self.pending_split {
+            Some(d) if d == first => Some(second),
+            Some(d) if d == second => Some(first),
+            _ => Some(default),
+        };
+        self.request_manage_dirty();
+    }
+
+    fn cancel_pending_split(&mut self) {
+        if self.pending_split.is_some() {
+            self.pending_split = None;
+            self.request_manage_dirty();
+        }
+    }
+
+    fn clear_pending_split_if_non_tiling(&mut self, window_id: WindowId) {
+        let participates = self
+            .focused_tree()
+            .and_then(|t| t.window_state(window_id.0))
+            .map(|s| s.participates_in_tiling())
+            .unwrap_or(false);
+        if !participates {
+            self.pending_split = None;
         }
     }
 
@@ -106,6 +153,7 @@ impl WMState {
                 .focused_tree()
                 .is_some_and(|tree| tree.toggle_fullscreen(window_id.0))
         {
+            self.clear_pending_split_if_non_tiling(window_id);
             self.request_manage_dirty();
             self.render_order_cache.clear();
         }
@@ -119,11 +167,12 @@ impl WMState {
         let Some(rect) = self.resolve_toggle_rect(window_id) else {
             return;
         };
-        let Some(tree) = self.focused_tree() else {
-            return;
-        };
 
-        if tree.toggle_floating(window_id.0, rect) {
+        if self
+            .focused_tree()
+            .is_some_and(|tree| tree.toggle_floating(window_id.0, rect))
+        {
+            self.clear_pending_split_if_non_tiling(window_id);
             self.request_manage_dirty();
             self.render_order_cache.clear();
         }
@@ -137,11 +186,12 @@ impl WMState {
         let Some(rect) = self.resolve_toggle_rect(window_id) else {
             return;
         };
-        let Some(tree) = self.focused_tree() else {
-            return;
-        };
 
-        if tree.toggle_pseudo_tiled(window_id.0, rect) {
+        if self
+            .focused_tree()
+            .is_some_and(|tree| tree.toggle_pseudo_tiled(window_id.0, rect))
+        {
+            self.clear_pending_split_if_non_tiling(window_id);
             self.request_manage_dirty();
             self.render_order_cache.clear();
         }
@@ -155,9 +205,6 @@ impl WMState {
         let Some(rect) = self.resolve_toggle_rect(window_id) else {
             return;
         };
-        let Some(tree) = self.focused_tree() else {
-            return;
-        };
 
         let state = match target {
             WindowState::Floating { .. } => WindowState::Floating { rect },
@@ -165,7 +212,11 @@ impl WMState {
             other => other,
         };
 
-        if tree.set_window_state(window_id.0, state) {
+        if self
+            .focused_tree()
+            .is_some_and(|tree| tree.set_window_state(window_id.0, state))
+        {
+            self.clear_pending_split_if_non_tiling(window_id);
             self.request_manage_dirty();
             self.render_order_cache.clear();
         }
@@ -331,6 +382,7 @@ impl WMState {
         };
 
         if success {
+            self.pending_split = None;
             self.render_order_cache.clear();
             self.request_manage_dirty();
         }
@@ -406,8 +458,9 @@ impl WMState {
 
 #[cfg(test)]
 mod tests {
+    use super::super::events::Event;
     use super::super::output::{Output, OutputId};
-    use super::super::window::WindowId;
+    use super::super::window::{Window, WindowId};
     use super::*;
 
     fn positioned_output(state: &mut WMState, id: OutputId, x: i32, y: i32, w: i32, h: i32) {
@@ -493,13 +546,153 @@ mod tests {
             state.windows.insert(id, window);
         }
         let tree = state.tree_for_output(OutputId(2)).unwrap();
-        tree.insert_window(10);
-        tree.insert_window(11);
+        tree.insert_window(10, None);
+        tree.insert_window(11, None);
         tree.focus_window(10);
 
         state.focus_output_direction(FocusDirection::Right);
 
         assert_eq!(state.focused_output, Some(OutputId(2)));
         assert_eq!(state.focused_window, Some(WindowId(10)));
+    }
+
+    #[test]
+    fn toggle_pending_split_vertical_cycles_right_left_right() {
+        let mut state = WMState::new();
+        let o1 = OutputId(1);
+        state.outputs.insert(o1, Output::new());
+        state.focused_output = Some(o1);
+        let w1 = WindowId(1);
+        state.windows.insert(w1, Window::new(w1, o1));
+        state.tree_for_output(o1).unwrap().insert_window(1, None);
+        state.focus_window_id(w1);
+
+        state.toggle_pending_split(
+            (SplitDirection::Right, SplitDirection::Left),
+            SplitDirection::Right,
+        );
+        assert_eq!(state.pending_split, Some(SplitDirection::Right));
+
+        state.toggle_pending_split(
+            (SplitDirection::Right, SplitDirection::Left),
+            SplitDirection::Right,
+        );
+        assert_eq!(state.pending_split, Some(SplitDirection::Left));
+
+        state.toggle_pending_split(
+            (SplitDirection::Right, SplitDirection::Left),
+            SplitDirection::Right,
+        );
+        assert_eq!(state.pending_split, Some(SplitDirection::Right));
+    }
+
+    #[test]
+    fn toggle_pending_split_horizontal_cycles_down_up_down() {
+        let mut state = WMState::new();
+        let o1 = OutputId(1);
+        state.outputs.insert(o1, Output::new());
+        state.focused_output = Some(o1);
+        let w1 = WindowId(1);
+        state.windows.insert(w1, Window::new(w1, o1));
+        state.tree_for_output(o1).unwrap().insert_window(1, None);
+        state.focus_window_id(w1);
+
+        state.toggle_pending_split(
+            (SplitDirection::Down, SplitDirection::Up),
+            SplitDirection::Down,
+        );
+        assert_eq!(state.pending_split, Some(SplitDirection::Down));
+
+        state.toggle_pending_split(
+            (SplitDirection::Down, SplitDirection::Up),
+            SplitDirection::Down,
+        );
+        assert_eq!(state.pending_split, Some(SplitDirection::Up));
+
+        state.toggle_pending_split(
+            (SplitDirection::Down, SplitDirection::Up),
+            SplitDirection::Down,
+        );
+        assert_eq!(state.pending_split, Some(SplitDirection::Down));
+    }
+
+    #[test]
+    fn toggle_pending_split_vertical_clears_on_floating() {
+        let mut state = WMState::new();
+        let o1 = OutputId(1);
+        state.outputs.insert(o1, Output::new());
+        state.focused_output = Some(o1);
+        let w1 = WindowId(1);
+        state.windows.insert(w1, Window::new(w1, o1));
+        state.tree_for_output(o1).unwrap().insert_window(1, None);
+        state.focus_window_id(w1);
+        state.toggle_pending_split(
+            (SplitDirection::Right, SplitDirection::Left),
+            SplitDirection::Right,
+        );
+        assert_eq!(state.pending_split, Some(SplitDirection::Right));
+
+        state.toggle_focused_floating();
+        assert_eq!(state.pending_split, None);
+    }
+
+    #[test]
+    fn toggle_pending_split_vertical_clears_on_fullscreen() {
+        let mut state = WMState::new();
+        let o1 = OutputId(1);
+        state.outputs.insert(o1, Output::new());
+        state.focused_output = Some(o1);
+        let w1 = WindowId(1);
+        state.windows.insert(w1, Window::new(w1, o1));
+        state.tree_for_output(o1).unwrap().insert_window(1, None);
+        state.focus_window_id(w1);
+        state.toggle_pending_split(
+            (SplitDirection::Right, SplitDirection::Left),
+            SplitDirection::Right,
+        );
+        assert_eq!(state.pending_split, Some(SplitDirection::Right));
+
+        state.toggle_focused_fullscreen();
+        assert_eq!(state.pending_split, None);
+    }
+
+    #[test]
+    fn cancel_pending_split_clears_state() {
+        let mut state = WMState::new();
+        let o1 = OutputId(1);
+        state.outputs.insert(o1, Output::new());
+        state.focused_output = Some(o1);
+        let w1 = WindowId(1);
+        state.windows.insert(w1, Window::new(w1, o1));
+        state.tree_for_output(o1).unwrap().insert_window(1, None);
+        state.focus_window_id(w1);
+        state.pending_split = Some(SplitDirection::Right);
+
+        state.cancel_pending_split();
+        assert_eq!(state.pending_split, None);
+    }
+
+    #[test]
+    fn pending_split_consumed_on_window_created() {
+        let mut state = WMState::new();
+        let o1 = OutputId(1);
+        state.outputs.insert(o1, Output::new());
+        state.focused_output = Some(o1);
+        let w1 = WindowId(1);
+        state.windows.insert(w1, Window::new(w1, o1));
+        state.tree_for_output(o1).unwrap().insert_window(1, None);
+        state.pending_split = Some(crate::layout::SplitDirection::Left);
+
+        state.handle_event(Event::WindowCreated {
+            window_id: WindowId(2),
+            target_output: o1,
+        });
+
+        assert_eq!(state.pending_split, None);
+        assert_eq!(state.focused_window, Some(WindowId(2)));
+        let tree = state.tree_for_output(o1).unwrap();
+        let visible: Vec<u32> = tree.visible_windows();
+        assert_eq!(visible, vec![2, 1]);
+        assert_eq!(tree.focused_window(), Some(2));
     }
 }
