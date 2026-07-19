@@ -73,7 +73,8 @@ between renders are still caught.
 ### River Protocol Flow
 
 1. `main.rs` connects to Wayland and gets the registry.
-2. `handlers.rs` binds `river_window_manager_v1` and `river_xkb_bindings_v1` globals,
+2. `handlers.rs` binds the `river_window_manager_v1`, `river_xkb_bindings_v1`, and
+   `river_layer_shell_v1` globals,
    translating each River event into a domain `Event` and calling `state.handle_event(event)`.
 3. River emits `ManageStart` / `RenderStart` sequences.
 4. During `ManageStart`:
@@ -243,7 +244,7 @@ flowchart TD
 ## Work in Progress / Gotchas
 
 - Some command implementations are placeholders: rotate and cycle are not wired.
-- Pointer-driven move/resize is not implemented.
+- Pointer-driven move/resize is implemented via the `InteractiveOp` state machine on `Seat`: a `PointerMoveRequested` / `PointerResizeRequested` River event records a pending op, `apply_manage` starts it with `op_start_pointer` (issuing `StartPointerOp` / `EndPointerOp` effects), and cumulative `op_delta` events translate/resize the window's floating rect (clamped to its `DimensionsHint`). `OpRelease` schedules `op_end`. The seat's `wl_pointer` is bound from the `wl_seat` global for cursor handling.
 - IPC is not implemented.
 - `wayland-client` event_created_child is used for River child objects;
   manual child data hashing is commented out in `handlers.rs`.

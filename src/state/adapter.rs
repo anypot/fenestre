@@ -228,6 +228,41 @@ impl WMState {
                     layer_output.set_default();
                 }
             }
+            Effect::StartPointerOp { seat_id } => {
+                // Begin an interactive pointer operation. Sent from
+                // `apply_manage`; River ignores it unless it is made inside a
+                // manage sequence, which is exactly where this effect is applied.
+                if let Some(seat) = self.seats.get(&seat_id)
+                    && let Some(river_seat) = seat.river_seat.as_ref()
+                {
+                    river_seat.op_start_pointer();
+                }
+            }
+            Effect::EndPointerOp { seat_id } => {
+                // End the interactive pointer operation started by
+                // `StartPointerOp`. River keeps the op alive until this is
+                // processed, so it is emitted (with `StartPointerOp`) during a
+                // manage sequence.
+                if let Some(seat) = self.seats.get(&seat_id)
+                    && let Some(river_seat) = seat.river_seat.as_ref()
+                {
+                    river_seat.op_end();
+                }
+            }
+            Effect::InformResizeStart { window_id } => {
+                if let Some(window) = self.windows.get(&window_id)
+                    && let Some(river_window) = window.river_window.as_ref()
+                {
+                    river_window.inform_resize_start();
+                }
+            }
+            Effect::InformResizeEnd { window_id } => {
+                if let Some(window) = self.windows.get(&window_id)
+                    && let Some(river_window) = window.river_window.as_ref()
+                {
+                    river_window.inform_resize_end();
+                }
+            }
         }
     }
 

@@ -51,6 +51,7 @@ Fenestre runs as a River window manager client. It requires a River that support
 
 - `river_window_management_v1`
 - `river_xkb_bindings_v1`
+- `river_layer_shell_v1` (used for layer-shell exclusive zones and keyboard focus)
 
 ## Configuration
 
@@ -140,6 +141,6 @@ All matching rules apply, later wins. Rules are evaluated once per window as its
 - `Super+Ctrl+l`: focus output to the right
 ## Status
 
-Working: River integration, Lua + TOML config loading (TOML preferred), per-output BSP layout with hotplug reassignment, compositor-side borders, window rules, and keyboard-driven focus/move/resize.
+Working: River integration, Lua + TOML config loading (TOML preferred), per-output BSP layout with hotplug reassignment, compositor-side borders, window rules, keyboard-driven focus/move/resize, and pointer-driven move/resize (interactive move/resize of windows via the compositor's `op_start_pointer` flow).
 
-Not yet implemented: pointer-driven move/resize, IPC, and a layout rotate command.
+Not yet implemented: IPC and a layout rotate command.

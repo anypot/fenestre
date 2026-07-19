@@ -12,11 +12,22 @@ use std::path::PathBuf;
 use super::events::Event;
 use super::keybindings::{KeyBinding, XkbBindingId};
 use super::output::{Output, OutputId};
+use super::pointerbindings::{PointerBinding, PointerBindingId};
 use super::scene::SceneSnapshot;
-use super::seat::{Seat, SeatId};
+use super::seat::{InteractiveOp, Seat, SeatId};
 use super::window::{Window, WindowId};
 use crate::config::Config;
 use crate::layout::{LayoutTree, Rect, WindowState};
+
+/// Default edges for a resize when the pointer position or window geometry
+/// cannot be determined: bottom-right resize (bottom=2 | right=8 = 10).
+const DEFAULT_RESIZE_EDGES: u32 = 0b1010;
+
+/// Result of computing an interactive operation's new rect.
+pub(super) struct OpRect {
+    pub(super) window_id: WindowId,
+    pub(super) rect: Rect,
+}
 
 /// Owns all mutable compositor state for the window manager.
 ///
@@ -33,6 +44,7 @@ pub(crate) struct WMState {
     pub(super) wm: Option<crate::protocol::river::river_window_management_v1::client::river_window_manager_v1::RiverWindowManagerV1>,
     pub(super) xkb_bindings: Option<crate::protocol::river::river_xkb_bindings_v1::client::river_xkb_bindings_v1::RiverXkbBindingsV1>,
     pub(super) layer_shell: Option<crate::protocol::river::river_layer_shell_v1::client::river_layer_shell_v1::RiverLayerShellV1>,
+
     pub(super) config: Option<Config>,
     pub(super) config_path: Option<PathBuf>,
 
@@ -40,6 +52,8 @@ pub(crate) struct WMState {
     pub(super) outputs: HashMap<OutputId, Output>,
     pub(super) seats: BTreeMap<SeatId, Seat>,
     pub(super) keybindings: HashMap<XkbBindingId, KeyBinding>,
+    /// Runtime River pointer bindings (Super+drag to move/resize), keyed by id.
+    pub(super) pointer_bindings: HashMap<PointerBindingId, PointerBinding>,
     pub(super) output_trees: HashMap<OutputId, LayoutTree>,
 
     pub(super) focused_window: Option<WindowId>,
@@ -52,6 +66,10 @@ pub(crate) struct WMState {
     pub(super) xkb_bindings_dirty: bool,
     /// River xkb binding protocol objects queued for destruction during the next manage sequence.
     pub(super) pending_xkb_binding_destroys: Vec<crate::protocol::river::river_xkb_bindings_v1::client::river_xkb_binding_v1::RiverXkbBindingV1>,
+    /// True when desired pointer bindings differ from configured River binding objects.
+    pub(super) pointer_bindings_dirty: bool,
+    /// River pointer binding protocol objects queued for destruction during the next manage sequence.
+    pub(super) pending_pointer_binding_destroys: Vec<crate::protocol::river::river_window_management_v1::client::river_pointer_binding_v1::RiverPointerBindingV1>,
     /// Window rules loaded from config, applied per-window when metadata is known.
     pub(super) window_rules: Option<super::rule::WindowRules>,
     /// Window ID to focus during the next manage sequence.
@@ -88,6 +106,7 @@ pub(crate) struct WMState {
     next_output_id: OutputId,
     next_seat_id: SeatId,
     next_xkb_binding_id: XkbBindingId,
+    next_pointer_binding_id: PointerBindingId,
 
     /// Proxy-to-ID indexes for O(1) lookup by Wayland object.
     pub(super) windows_by_proxy: HashMap<crate::protocol::river::river_window_management_v1::client::river_window_v1::RiverWindowV1, WindowId>,
@@ -116,6 +135,7 @@ impl WMState {
             outputs: HashMap::new(),
             seats: BTreeMap::new(),
             keybindings: HashMap::new(),
+            pointer_bindings: HashMap::new(),
             output_trees: HashMap::new(),
 
             focused_window: None,
@@ -126,6 +146,8 @@ impl WMState {
 
             xkb_bindings_dirty: false,
             pending_xkb_binding_destroys: Vec::new(),
+            pointer_bindings_dirty: false,
+            pending_pointer_binding_destroys: Vec::new(),
             window_rules: None,
             pending_focus: None,
             pending_closes: Vec::new(),
@@ -135,6 +157,7 @@ impl WMState {
             next_output_id: OutputId(0),
             next_seat_id: SeatId(0),
             next_xkb_binding_id: XkbBindingId(0),
+            next_pointer_binding_id: PointerBindingId(0),
             render_order_cache: Vec::new(),
             last_manage_scene: Vec::new(),
             last_layer_shell_default: None,
@@ -175,6 +198,13 @@ impl WMState {
     pub(super) fn next_xkb_binding_id(&mut self) -> XkbBindingId {
         let id = self.next_xkb_binding_id;
         self.next_xkb_binding_id.0 += 1;
+        id
+    }
+
+    /// Allocate the next internal River pointer binding identifier.
+    pub(super) fn next_pointer_binding_id(&mut self) -> PointerBindingId {
+        let id = self.next_pointer_binding_id;
+        self.next_pointer_binding_id.0 += 1;
         id
     }
 
@@ -414,6 +444,216 @@ impl WMState {
         self.windows.get_mut(&id).map(|window| (id, window))
     }
 
+    /// Whether the given seat currently has an interactive operation in progress.
+    pub(super) fn seat_op_active(&self, seat_id: SeatId) -> bool {
+        self.seats
+            .get(&seat_id)
+            .is_some_and(|seat| seat.op.is_active())
+    }
+
+    /// Reset every seat whose active interactive operation targets `window_id`.
+    ///
+    /// Called when a window is closed: an op that points at a now-removed window
+    /// would otherwise be stranded. If `op_start_pointer` had not yet been sent
+    /// (`op_started == false`), the next manage would emit `StartPointerOp` for a
+    /// destroyed window; if it had, the op would leak on the seat until a physical
+    /// button release and block every future drag for that seat via
+    /// `start_interactive_op`'s `seat_op_active` guard. Resetting here drops the
+    /// op, its pending float, and any scheduled `op_end` so the seat returns idle.
+    pub(super) fn cancel_op_for_window(&mut self, window_id: WindowId) {
+        for seat in self.seats.values_mut() {
+            if seat.op.window_id() == Some(window_id) {
+                seat.op = InteractiveOp::Inactive;
+                seat.op_started = false;
+                seat.op_ending = false;
+                seat.pending_float = None;
+            }
+        }
+    }
+
+    /// Record a pending interactive operation for `seat_id`/`window_id`, capturing
+    /// the window's current rect as the operation's anchor. The actual
+    /// `op_start_pointer` protocol call is deferred to the next manage sequence.
+    /// Returns `true` if the op was recorded (window exists, seat idle).
+    fn start_interactive_op(
+        &mut self,
+        seat_id: SeatId,
+        window_id: WindowId,
+        op: InteractiveOp,
+    ) -> bool {
+        if !self.windows.contains_key(&window_id) || self.seat_op_active(seat_id) {
+            return false;
+        }
+        let Some(initial_rect) = self.window_current_rect(window_id) else {
+            return false;
+        };
+        if let Some(seat) = self.seats.get_mut(&seat_id) {
+            let op = match op {
+                InteractiveOp::Move { window_id, .. } => InteractiveOp::Move {
+                    window_id,
+                    initial_rect,
+                },
+                InteractiveOp::Resize {
+                    window_id, edges, ..
+                } => InteractiveOp::Resize {
+                    window_id,
+                    edges,
+                    initial_rect,
+                },
+                InteractiveOp::Inactive => return false,
+            };
+            seat.op = op;
+            seat.op_started = false;
+            seat.op_ending = false;
+        }
+        self.request_manage_dirty();
+        true
+    }
+
+    /// Return the window's current arranged rect, preferring the rect set during
+    /// the last manage cycle (`layout_rect`) and falling back to the tree's
+    /// current arrangement.
+    pub(super) fn window_current_rect(&self, window_id: WindowId) -> Option<Rect> {
+        if let Some(window) = self.windows.get(&window_id)
+            && let Some(rect) = window.layout_rect
+        {
+            return Some(rect);
+        }
+        let output_id = self.windows.get(&window_id)?.output_id;
+        self.output_trees
+            .get(&output_id)?
+            .arranged_windows_readonly()
+            .into_iter()
+            .find(|(id, _, _)| *id == window_id.0)
+            .map(|(_, rect, _)| rect)
+    }
+
+    /// Return the rectangle of the output that currently owns `window_id`, or
+    /// `None` if the window has no output or the output geometry is unknown.
+    pub(super) fn window_output_rect(&self, window_id: WindowId) -> Option<Rect> {
+        let output_id = self.windows.get(&window_id)?.output_id;
+        self.outputs.get(&output_id)?.rect()
+    }
+
+    /// Compute the resize edge bitmask (top=1, bottom=2, left=4, right=8) for a
+    /// Super+drag resize, based on the pointer's position within the window.
+    ///
+    /// The pointer position (global coordinates) is compared against the
+    /// window's global rectangle (output position + layout rect). The half of
+    /// the window the pointer is on selects the corresponding edge(s), giving a
+    /// four-corner resize. Falls back to a bottom-right resize when the pointer
+    /// position or window geometry is unavailable.
+    pub(super) fn compute_resize_edges(&self, seat_id: SeatId, window_id: WindowId) -> u32 {
+        let Some(seat) = self.seats.get(&seat_id) else {
+            return DEFAULT_RESIZE_EDGES;
+        };
+        let Some((px, py)) = seat.pointer_position else {
+            return DEFAULT_RESIZE_EDGES;
+        };
+        let Some(local) = self.window_current_rect(window_id) else {
+            return DEFAULT_RESIZE_EDGES;
+        };
+        let Some(output_id) = self.windows.get(&window_id).map(|w| w.output_id) else {
+            return DEFAULT_RESIZE_EDGES;
+        };
+        let Some(output_rect) = self.outputs.get(&output_id).and_then(|o| o.rect()) else {
+            return DEFAULT_RESIZE_EDGES;
+        };
+        // Global window rect: output origin offset by the window's local rect.
+        let wx = output_rect.x + local.x;
+        let wy = output_rect.y + local.y;
+        let cx = wx + local.width / 2;
+        let cy = wy + local.height / 2;
+
+        let mut edges = 0;
+        if px < cx {
+            edges |= 0b0100; // left
+        } else {
+            edges |= 0b1000; // right
+        }
+        if py < cy {
+            edges |= 0b0001; // top
+        } else {
+            edges |= 0b0010; // bottom
+        }
+        edges
+    }
+
+    /// Compute the new rect for a seat's active interactive operation given a
+    /// cumulative delta `(dx, dy)` since op start. Returns `None` when the seat
+    /// has no active operation or the window is missing.
+    ///
+    /// For a move, the initial rect is simply translated by `(dx, dy)`. For a
+    /// resize, the `edges` bitmask (top=1, bottom=2, left=4, right=8) selects
+    /// which borders move; edges opposed to the grabbed ones stay fixed. The
+    /// resulting size is clamped to the window's `dimensions_hint`.
+    pub(super) fn compute_op_rect(&self, seat_id: SeatId, dx: i32, dy: i32) -> Option<OpRect> {
+        let seat = self.seats.get(&seat_id)?;
+        let (window_id, edges, initial_rect) = match seat.op {
+            InteractiveOp::Move {
+                window_id,
+                initial_rect,
+            } => (window_id, 0, initial_rect),
+            InteractiveOp::Resize {
+                window_id,
+                edges,
+                initial_rect,
+            } => (window_id, edges, initial_rect),
+            InteractiveOp::Inactive => return None,
+        };
+        let window = self.windows.get(&window_id)?;
+        let rect = match edges {
+            0 => Rect::new(
+                initial_rect.x.saturating_add(dx),
+                initial_rect.y.saturating_add(dy),
+                initial_rect.width,
+                initial_rect.height,
+            ),
+            edges => {
+                let mut x = initial_rect.x;
+                let mut y = initial_rect.y;
+                let mut width = initial_rect.width;
+                let mut height = initial_rect.height;
+                if edges & 0b1000 != 0 {
+                    width = initial_rect.width.saturating_add(dx);
+                }
+                if edges & 0b0100 != 0 {
+                    x = initial_rect.x.saturating_add(dx);
+                    width = initial_rect.width.saturating_sub(dx);
+                }
+                if edges & 0b0010 != 0 {
+                    height = initial_rect.height.saturating_add(dy);
+                }
+                if edges & 0b0001 != 0 {
+                    y = initial_rect.y.saturating_add(dy);
+                    height = initial_rect.height.saturating_sub(dy);
+                }
+                let (cw, ch) = window.clamp_dimensions(width, height);
+                // Re-anchor left/top-grabbed edges when clamping shortened them.
+                if edges & 0b0100 != 0 {
+                    x = initial_rect.x.saturating_add(initial_rect.width - cw);
+                }
+                if edges & 0b0001 != 0 {
+                    y = initial_rect.y.saturating_add(initial_rect.height - ch);
+                }
+                Rect::new(x, y, cw, ch)
+            }
+        };
+        // Anchor the computed rect to the owning output so cumulative deltas
+        // (which are untrusted i32 values from the compositor) can never produce
+        // negative or overflowed coordinates that would be sent to the compositor.
+        let rect = if let Some(output) = self.window_output_rect(window_id) {
+            let max_x = (output.x + output.width).saturating_sub(rect.width);
+            let max_y = (output.y + output.height).saturating_sub(rect.height);
+            let clamped_x = rect.x.clamp(output.x, max_x.max(output.x));
+            let clamped_y = rect.y.clamp(output.y, max_y.max(output.y));
+            Rect::new(clamped_x, clamped_y, rect.width, rect.height)
+        } else {
+            rect
+        };
+        Some(OpRect { window_id, rect })
+    }
+
     /// Process a domain event, mutating state.
     pub(super) fn handle_event(&mut self, event: Event) {
         match event {
@@ -459,6 +699,7 @@ impl WMState {
                     self.current_seat = Some(seat_id);
                 }
                 self.reconcile_keybindings();
+                self.reconcile_pointer_bindings();
                 self.request_manage_dirty();
             }
             Event::WindowClosed { window_id } => {
@@ -571,6 +812,7 @@ impl WMState {
             Event::SeatRemoved { seat_id } => {
                 let _ = self.remove_seat_by_id(seat_id);
                 self.reconcile_keybindings();
+                self.reconcile_pointer_bindings();
                 self.request_manage_dirty();
             }
             Event::SeatNameUpdated { seat_id, name } => {
@@ -598,6 +840,61 @@ impl WMState {
                     self.pending_focus = Some(window_id);
                 }
                 self.request_manage_dirty();
+            }
+            Event::PointerMoveRequested { window_id, seat_id } => {
+                // Record a pending move operation. The actual `op_start_pointer`
+                // protocol call is deferred to the next manage sequence (it may
+                // only be issued inside ManageStart); the window's current rect
+                // is captured as the operation's anchor.
+                self.start_interactive_op(
+                    seat_id,
+                    window_id,
+                    InteractiveOp::Move {
+                        window_id,
+                        initial_rect: Rect::new(0, 0, 0, 0),
+                    },
+                );
+            }
+            Event::PointerResizeRequested {
+                window_id,
+                seat_id,
+                edges,
+            } => {
+                // Record a pending resize operation, mirroring the move path.
+                // `edges` is the River edges bitmask describing which borders the
+                // pointer grabbed; it drives the delta transform in `OpDelta`.
+                self.start_interactive_op(
+                    seat_id,
+                    window_id,
+                    InteractiveOp::Resize {
+                        window_id,
+                        edges,
+                        initial_rect: Rect::new(0, 0, 0, 0),
+                    },
+                );
+            }
+            Event::OpDelta { seat_id, dx, dy } => {
+                // Cumulative delta since op start: transform the recorded
+                // `initial_rect` into a new rect and store it as a pending float
+                // on the seat. The layout tree is only mutated once, inside the
+                // next `apply_manage`, so a drag that emits many `op_delta`
+                // events per manage sequence does not traverse the tree each time.
+                if let Some(new_rect) = self.compute_op_rect(seat_id, dx, dy) {
+                    if let Some(seat) = self.seats.get_mut(&seat_id) {
+                        seat.pending_float = Some((new_rect.window_id, new_rect.rect));
+                    }
+                    self.request_manage_dirty();
+                }
+            }
+            Event::OpRelease { seat_id } => {
+                // Buttons released: schedule `op_end` on the next manage sequence.
+                // The op stays active so trailing `op_delta` events still apply.
+                if let Some(seat) = self.seats.get_mut(&seat_id)
+                    && seat.op.is_active()
+                {
+                    seat.op_ending = true;
+                    self.request_manage_dirty();
+                }
             }
         }
     }
@@ -1646,5 +1943,260 @@ mod tests {
             crate::layout::Rect::new(0, 40, 1920, 1040),
             "restored tiled window should use tiling rect"
         );
+    }
+
+    /// Build a `WMState` with one output (real geometry) holding one tiled
+    /// window, a seat, and an arranged layout rect for the window. Returns
+    /// `(state, output, window, seat)`.
+    fn setup_pointer_op_fixture() -> (WMState, OutputId, WindowId, SeatId) {
+        let mut state = WMState::new();
+        let o = OutputId(1);
+        let mut out = Output::new();
+        out.set_dimensions(1920, 1080);
+        state.outputs.insert(o, out);
+        state.focused_output = Some(o);
+
+        let w = WindowId(1);
+        state.handle_event(Event::WindowCreated {
+            window_id: w,
+            target_output: o,
+        });
+        state.ensure_tree_for_output(o).arrange();
+
+        let s = SeatId(1);
+        state.handle_event(Event::SeatCreated { seat_id: s });
+        (state, o, w, s)
+    }
+
+    #[test]
+    fn event_pointer_move_requested_starts_pending_op() {
+        let (mut state, _o, w, s) = setup_pointer_op_fixture();
+
+        assert!(!state.seat_op_active(s), "precondition: no op yet");
+        state.handle_event(Event::PointerMoveRequested {
+            window_id: w,
+            seat_id: s,
+        });
+
+        assert!(state.seat_op_active(s), "move op should be active");
+        let seat = state.seats.get(&s).unwrap();
+        assert!(
+            !seat.op_started,
+            "op must start in the next manage sequence"
+        );
+        match &seat.op {
+            InteractiveOp::Move {
+                window_id,
+                initial_rect,
+            } => {
+                assert_eq!(*window_id, w);
+                // The initial rect is the window's current arranged rect.
+                assert_eq!(initial_rect.width, 1920);
+            }
+            _ => panic!("expected a Move op"),
+        }
+    }
+
+    #[test]
+    fn window_closed_during_pending_op_cancels_seat_op() {
+        let (mut state, _o, w, s) = setup_pointer_op_fixture();
+
+        // A pointer move is requested but not yet started (op_start_pointer is
+        // deferred to the next manage sequence).
+        state.handle_event(Event::PointerMoveRequested {
+            window_id: w,
+            seat_id: s,
+        });
+        assert!(state.seat_op_active(s), "precondition: op is pending");
+
+        // Closing the drag-target window must cancel the seat's op so a later
+        // manage does not emit StartPointerOp for a destroyed window, and so the
+        // op does not leak and block future drags.
+        state.handle_event(Event::WindowClosed { window_id: w });
+
+        assert!(
+            !state.seat_op_active(s),
+            "closing the drag target must cancel the seat's interactive op"
+        );
+    }
+
+    #[test]
+    fn window_closed_during_started_op_cancels_seat_op() {
+        let (mut state, _o, w, s) = setup_pointer_op_fixture();
+
+        state.handle_event(Event::PointerMoveRequested {
+            window_id: w,
+            seat_id: s,
+        });
+        // Advance the op into its started state (op_start_pointer sent).
+        let _ = state.transition_pointer_ops();
+
+        state.handle_event(Event::WindowClosed { window_id: w });
+
+        assert!(
+            !state.seat_op_active(s),
+            "closing the drag target must cancel an already-started op"
+        );
+    }
+
+    #[test]
+    fn op_delta_move_translates_initial_rect() {
+        let (mut state, _o, w, s) = setup_pointer_op_fixture();
+        // A smaller floating window has room to move within the output.
+        state
+            .ensure_tree_for_output(OutputId(1))
+            .toggle_floating(w.0, Rect::new(100, 50, 800, 600));
+
+        state.handle_event(Event::PointerMoveRequested {
+            window_id: w,
+            seat_id: s,
+        });
+        // A move delta of (100, 50) shifts the whole rect by that amount.
+        let op_rect = state.compute_op_rect(s, 100, 50).expect("op rect computed");
+        assert_eq!(op_rect.window_id, w);
+        assert_eq!(op_rect.rect.x, 200, "move should translate x by dx");
+        assert_eq!(op_rect.rect.y, 100, "move should translate y by dy");
+        assert_eq!(op_rect.rect.width, 800, "move preserves size");
+    }
+
+    #[test]
+    fn op_delta_move_clamps_to_output() {
+        let (mut state, _o, w, s) = setup_pointer_op_fixture();
+        state
+            .ensure_tree_for_output(OutputId(1))
+            .toggle_floating(w.0, Rect::new(100, 50, 800, 600));
+
+        state.handle_event(Event::PointerMoveRequested {
+            window_id: w,
+            seat_id: s,
+        });
+        // A huge delta must not produce coordinates outside the output bounds.
+        let op_rect = state
+            .compute_op_rect(s, 9000, 9000)
+            .expect("op rect computed");
+        assert_eq!(op_rect.rect.width, 800);
+        assert!(op_rect.rect.x >= 0, "x must stay within output");
+        assert!(op_rect.rect.y >= 0, "y must stay within output");
+        let max_x = 1920 - 800;
+        let max_y = 1080 - 600;
+        assert_eq!(op_rect.rect.x, max_x, "x clamps to right edge");
+        assert_eq!(op_rect.rect.y, max_y, "y clamps to bottom edge");
+    }
+
+    #[test]
+    fn op_delta_resize_right_edge_grows_width() {
+        let (mut state, _o, w, s) = setup_pointer_op_fixture();
+
+        state.handle_event(Event::PointerResizeRequested {
+            window_id: w,
+            seat_id: s,
+            // right edge only (bit 8).
+            edges: 0b1000,
+        });
+        // dx=200 grows the width by 200, keeping x/y fixed.
+        let op_rect = state.compute_op_rect(s, 200, 0).expect("op rect computed");
+        assert_eq!(op_rect.rect.x, 0);
+        assert_eq!(op_rect.rect.width, 1920 + 200, "right edge grows width");
+    }
+
+    #[test]
+    fn op_delta_resize_left_edge_shrinks_from_left() {
+        let (mut state, _o, w, s) = setup_pointer_op_fixture();
+
+        state.handle_event(Event::PointerResizeRequested {
+            window_id: w,
+            seat_id: s,
+            // left edge only (bit 4).
+            edges: 0b0100,
+        });
+        // dx=200 moves the left edge right by 200, shrinking width by 200.
+        let op_rect = state.compute_op_rect(s, 200, 0).expect("op rect computed");
+        assert_eq!(op_rect.rect.x, 200, "left edge moves right by dx");
+        assert_eq!(op_rect.rect.width, 1920 - 200, "left edge shrinks width");
+    }
+
+    #[test]
+    fn op_delta_resize_clamps_to_dimensions_hint() {
+        let (mut state, _o, w, s) = setup_pointer_op_fixture();
+
+        // Constrain the window to a minimum width of 1500.
+        state.handle_event(Event::DimensionsHint {
+            window_id: w,
+            min_w: 1500,
+            min_h: 0,
+            max_w: 0,
+            max_h: 0,
+        });
+        state.handle_event(Event::PointerResizeRequested {
+            window_id: w,
+            seat_id: s,
+            edges: 0b0100, // left edge, which would shrink width below the min
+        });
+        // dx=1000 would shrink width to 920; the hint floors it at 1500 and
+        // re-anchors the left edge so the right edge stays put.
+        let op_rect = state.compute_op_rect(s, 1000, 0).expect("op rect computed");
+        assert_eq!(op_rect.rect.width, 1500, "width clamped to min hint");
+        assert_eq!(
+            op_rect.rect.x,
+            1920 - 1500,
+            "left edge re-anchored to keep right fixed"
+        );
+    }
+
+    #[test]
+    fn op_release_flags_op_for_ending() {
+        let (mut state, _o, w, s) = setup_pointer_op_fixture();
+
+        state.handle_event(Event::PointerMoveRequested {
+            window_id: w,
+            seat_id: s,
+        });
+        state.handle_event(Event::OpRelease { seat_id: s });
+
+        let seat = state.seats.get(&s).unwrap();
+        assert!(seat.op_ending, "release must schedule op_end");
+        // The op stays active so trailing deltas still apply.
+        assert!(state.seat_op_active(s), "op stays active until op_end");
+    }
+
+    #[test]
+    fn pointer_op_ignored_while_another_active() {
+        let (mut state, _o, w, s) = setup_pointer_op_fixture();
+
+        state.handle_event(Event::PointerMoveRequested {
+            window_id: w,
+            seat_id: s,
+        });
+        // A second move request while the first is active must be ignored.
+        state.handle_event(Event::PointerMoveRequested {
+            window_id: w,
+            seat_id: s,
+        });
+        let seat = state.seats.get(&s).unwrap();
+        match &seat.op {
+            InteractiveOp::Move { initial_rect, .. } => {
+                assert_eq!(
+                    initial_rect.width, 1920,
+                    "initial rect unchanged by duplicate request"
+                );
+            }
+            _ => panic!("expected Move op to be retained"),
+        }
+    }
+
+    #[test]
+    fn window_clamp_dimensions_respects_hints() {
+        let mut window = Window::new(WindowId(1), OutputId(1));
+        window.set_dimensions_hint(200, 100, 800, 600);
+
+        // Below min -> clamped up.
+        assert_eq!(window.clamp_dimensions(50, 50), (200, 100));
+        // Within range -> unchanged.
+        assert_eq!(window.clamp_dimensions(400, 300), (400, 300));
+        // Above max -> clamped down.
+        assert_eq!(window.clamp_dimensions(1000, 1000), (800, 600));
+        // Zero hint on an axis means unconstrained on that axis.
+        window.set_dimensions_hint(0, 0, 0, 0);
+        assert_eq!(window.clamp_dimensions(123, 456), (123, 456));
     }
 }

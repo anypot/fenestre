@@ -37,6 +37,12 @@ impl WMState {
         // `new_layout_focus` from its own tree and would otherwise steal focus.
         let was_globally_focused = self.focused_window == Some(window_id);
 
+        // Drop any interactive pointer operation targeting this window. An op
+        // left pointing at a removed window would be stranded (see
+        // `cancel_op_for_window` for the failure modes), so clear it before the
+        // window leaves the map.
+        self.cancel_op_for_window(window_id);
+
         // Remove from the layout tree FIRST to capture the tree's chosen new
         // focus before any global focus bookkeeping runs.
         let new_layout_focus = if let Some(output_id) = output_id {

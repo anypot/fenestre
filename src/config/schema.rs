@@ -91,6 +91,18 @@ pub struct RawKeyBinding {
     pub command: RawCommand,
 }
 
+/// Intermediate representation of a pointer binding.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RawPointerBinding {
+    #[serde(default)]
+    pub target: Option<String>,
+    /// Pointer button name (e.g. "BTN_LEFT", "BTN_RIGHT") or raw Linux code.
+    pub button: String,
+    pub modifiers: RawModifiers,
+    /// Operation: "move" or "resize".
+    pub op: String,
+}
+
 /// Intermediate representation of keybinding modifiers: either a single string
 /// or an array of strings.
 #[derive(Debug, Clone, Deserialize)]
@@ -115,6 +127,8 @@ pub struct RawConfig {
     pub border_color_unfocused: Option<u32>,
     #[serde(default)]
     pub keybindings: Option<Vec<RawKeyBinding>>,
+    #[serde(default)]
+    pub pointer_bindings: Option<Vec<RawPointerBinding>>,
     #[serde(default, deserialize_with = "de_resize_delta_ratio")]
     pub resize_delta_ratio: Option<f64>,
     #[serde(default, deserialize_with = "de_resize_delta_percent")]
@@ -198,6 +212,12 @@ pub fn build_config(raw: RawConfig) -> Result<Config> {
         resize_delta_ratio: raw.resize_delta_ratio,
         resize_delta_percent: raw.resize_delta_percent,
         keybindings,
+        pointer_bindings: raw
+            .pointer_bindings
+            .unwrap_or_default()
+            .into_iter()
+            .map(build_raw_pointer_binding)
+            .collect::<Result<Vec<_>>>()?,
         rules,
     })
 }
@@ -219,6 +239,15 @@ fn build_raw_layout(raw: RawLayout) -> Result<LayoutConfig> {
         raw.preview_border_color,
         raw.preview_border_width,
     ))
+}
+
+fn build_raw_pointer_binding(raw: RawPointerBinding) -> Result<PointerBindingConfig> {
+    let modifiers = match raw.modifiers {
+        RawModifiers::Single(s) => vec![s],
+        RawModifiers::Multi(v) => v,
+    };
+
+    parser::build_pointer_binding(raw.target.as_deref(), &raw.button, &modifiers, &raw.op)
 }
 
 fn build_raw_keybinding(raw: RawKeyBinding) -> Result<KeyBindingConfig> {
@@ -400,6 +429,7 @@ mod tests {
                 modifiers: RawModifiers::Multi(vec!["super".to_string()]),
                 command: RawCommand::Simple("close".to_string()),
             }]),
+            pointer_bindings: None,
             rules: None,
         };
 
@@ -432,6 +462,7 @@ mod tests {
             resize_delta_ratio: None,
             resize_delta_percent: None,
             keybindings: None,
+            pointer_bindings: None,
             rules: None,
         };
 

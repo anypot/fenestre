@@ -151,18 +151,7 @@ impl Window {
         let mut width = size_for(fallback.width).max(1);
         let mut height = size_for(fallback.height).max(1);
 
-        if self.dimensions_hint.min_width > 0 {
-            width = width.max(self.dimensions_hint.min_width);
-        }
-        if self.dimensions_hint.min_height > 0 {
-            height = height.max(self.dimensions_hint.min_height);
-        }
-        if self.dimensions_hint.max_width > 0 {
-            width = width.min(self.dimensions_hint.max_width);
-        }
-        if self.dimensions_hint.max_height > 0 {
-            height = height.min(self.dimensions_hint.max_height);
-        }
+        (width, height) = self.apply_dimensions_hint(width, height);
 
         (width.max(1), height.max(1))
     }
@@ -183,6 +172,41 @@ impl Window {
         let size = Rect::new(0, 0, width, height);
         let center_in = self.layout_rect.unwrap_or(fallback_rect);
         crate::layout::capped_rect(center_in, size)
+    }
+
+    /// Clamp a proposed width/height to the window's size constraints.
+    ///
+    /// Used during an interactive resize to keep the window within its
+    /// app-reported `dimensions_hint` (`[min, max]` on each axis). A zero hint
+    /// on an axis means "no constraint" on that axis, matching the wire protocol
+    /// semantics used by River. The result is always at least 1 on each axis.
+    pub(super) fn clamp_dimensions(&self, width: i32, height: i32) -> (i32, i32) {
+        let (w, h) = self.apply_dimensions_hint(width, height);
+        (w.max(1), h.max(1))
+    }
+
+    /// Apply the window's `dimensions_hint` (`[min, max]` per axis) to a proposed
+    /// size. A zero hint on an axis means "no constraint" there, matching River's
+    /// wire protocol semantics. Each axis is floored to at least 1 by callers via
+    /// a final `.max(1)`. Shared by `preferred_dimensions` and `clamp_dimensions`
+    /// so the hint rules live in exactly one place.
+    fn apply_dimensions_hint(&self, width: i32, height: i32) -> (i32, i32) {
+        let hint = &self.dimensions_hint;
+        let mut w = width.max(1);
+        let mut h = height.max(1);
+        if hint.min_width > 0 {
+            w = w.max(hint.min_width);
+        }
+        if hint.min_height > 0 {
+            h = h.max(hint.min_height);
+        }
+        if hint.max_width > 0 {
+            w = w.min(hint.max_width);
+        }
+        if hint.max_height > 0 {
+            h = h.min(hint.max_height);
+        }
+        (w, h)
     }
 
     /// Determine whether this window should use client-side decorations.

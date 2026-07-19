@@ -6,6 +6,7 @@
 //! (it needs the `QueueHandle`); `event_created_child` proxy lifecycle
 //! remains inline at the handler/adapter boundary.
 use super::output::OutputId;
+use super::seat::SeatId;
 use super::window::WindowId;
 
 /// Bitmask requesting all four border edges (top | bottom | left | right).
@@ -67,5 +68,28 @@ pub(crate) enum Effect {
     /// during a manage sequence, so it is produced by `apply_manage`.
     SetLayerShellDefault {
         output_id: OutputId,
+    },
+    /// Start an interactive pointer operation for the seat. Must be issued
+    /// during a manage sequence; `apply_manage` produces it when a seat's
+    /// pending operation is first activated.
+    StartPointerOp {
+        seat_id: SeatId,
+    },
+    /// End the interactive pointer operation for the seat. Must be issued during
+    /// a manage sequence (River keeps the op alive until `op_end` is processed).
+    EndPointerOp {
+        seat_id: SeatId,
+    },
+    /// Inform a window that an interactive resize has begun. Must be issued
+    /// during a manage sequence; `apply_manage` produces it when a resize op
+    /// transitions from pending to active.
+    InformResizeStart {
+        window_id: WindowId,
+    },
+    /// Inform a window that an interactive resize has ended. Must be issued
+    /// during a manage sequence; `apply_manage` produces it when a resize op
+    /// is ended via `op_end`.
+    InformResizeEnd {
+        window_id: WindowId,
     },
 }
