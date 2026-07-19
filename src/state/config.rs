@@ -37,6 +37,7 @@ impl WMState {
         }
 
         self.reconcile_keybindings();
+        self.reconcile_pointer_bindings();
         self.reconcile_window_rules();
         self.request_manage_dirty();
     }
@@ -100,6 +101,32 @@ impl WMState {
         }
 
         self.xkb_bindings_dirty = true;
+    }
+
+    /// Rebuild runtime River pointer bindings from the active config.
+    ///
+    /// Mirrors `reconcile_keybindings` for pointer bindings: existing runtime
+    /// entries are removed (their River protocol objects queued for destruction
+    /// during the next manage sequence) and the resolved bindings recreated.
+    pub(super) fn reconcile_pointer_bindings(&mut self) {
+        let Some(bindings) = self.config.as_ref().map(|c| c.pointer_bindings.clone()) else {
+            return;
+        };
+
+        self.delete_pointer_bindings();
+
+        debug!(
+            target: "fenestre::state::config",
+            "Resolved {} pointer bindings", bindings.len()
+        );
+
+        for binding in bindings {
+            for seat_id in self.resolve_seat_targets(&binding.target) {
+                self.add_pointer_binding(seat_id, binding.button, binding.modifiers, binding.op);
+            }
+        }
+
+        self.pointer_bindings_dirty = true;
     }
 
     /// Resolve a `KeyBindingTarget` into concrete seat IDs.

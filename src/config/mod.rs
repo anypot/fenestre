@@ -154,6 +154,55 @@ struct KeyBindingIdentity {
     modifiers: u32,
 }
 
+/// Interactive pointer operation triggered by a pointer binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PointerOp {
+    /// Interactive move of the focused window.
+    Move,
+    /// Interactive resize of the focused window.
+    Resize,
+}
+
+/// Declarative pointer binding from configuration.
+///
+/// Binds a pointer button plus keyboard modifiers to an interactive operation
+/// (move/resize) on the focused window. On press, Fenestre starts a River
+/// pointer operation (`op_start_pointer`) and drives the window geometry from
+/// the cumulative `op_delta` events.
+#[derive(Debug, Clone)]
+pub struct PointerBindingConfig {
+    /// Seat target for this binding.
+    pub target: KeyBindingTarget,
+
+    /// Linux input event code for the pointer button (e.g. `BTN_LEFT`).
+    pub button: u32,
+
+    /// River modifier bitmask.
+    pub modifiers: u32,
+
+    /// Interactive operation to perform on press.
+    pub op: PointerOp,
+}
+
+impl PointerBindingConfig {
+    /// Identity used to match pointer bindings during config merging.
+    fn identity(&self) -> PointerBindingIdentity {
+        PointerBindingIdentity {
+            target: self.target,
+            button: self.button,
+            modifiers: self.modifiers,
+        }
+    }
+}
+
+/// Identity used to match pointer bindings during config merging.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct PointerBindingIdentity {
+    target: KeyBindingTarget,
+    button: u32,
+    modifiers: u32,
+}
+
 /// Output-relative window sizing and positioning defaults.
 ///
 /// Covers the tiling area (gap, margins) and the default size used for
@@ -215,6 +264,9 @@ pub struct Config {
 
     /// Configured keybindings.
     pub keybindings: Vec<KeyBindingConfig>,
+
+    /// Configured pointer bindings (Super+drag to move/resize).
+    pub pointer_bindings: Vec<PointerBindingConfig>,
 
     /// Tiling resize ratio delta per resize command press.
     pub resize_delta_ratio: Option<f64>,
@@ -395,12 +447,32 @@ impl Config {
                 self.keybindings.push(binding);
             }
         }
+        // Merge pointer bindings by identity, mirroring keybindings: a user
+        // binding whose identity matches a default overrides it, otherwise it
+        // is appended. Without this, user-supplied `pointer_bindings` were
+        // silently dropped and the built-in defaults used instead.
+        let default_pointer_indices: HashMap<PointerBindingIdentity, usize> = self
+            .pointer_bindings
+            .iter()
+            .enumerate()
+            .map(|(i, b)| (b.identity(), i))
+            .collect();
+        for binding in other.pointer_bindings {
+            let identity = binding.identity();
+            if let Some(&index) = default_pointer_indices.get(&identity) {
+                self.pointer_bindings[index] = binding;
+            } else {
+                self.pointer_bindings.push(binding);
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, KeyBindingConfig, KeyBindingTarget, LayoutConfig};
+    use super::{
+        Config, KeyBindingConfig, KeyBindingTarget, LayoutConfig, PointerBindingConfig, PointerOp,
+    };
     use crate::command::Command;
     use std::{
         fs,
@@ -575,6 +647,20 @@ mod tests {
         assert_eq!(binding.command, expected.command);
     }
 
+    fn pointer_binding(
+        target: KeyBindingTarget,
+        button: u32,
+        modifiers: u32,
+        op: PointerOp,
+    ) -> PointerBindingConfig {
+        PointerBindingConfig {
+            target,
+            button,
+            modifiers,
+            op,
+        }
+    }
+
     fn layout_config() -> LayoutConfig {
         LayoutConfig {
             gap: None,
@@ -602,6 +688,17 @@ mod tests {
     }
 
     fn make_config(keybindings: Vec<KeyBindingConfig>) -> Config {
+        make_config_full(keybindings, Vec::new())
+    }
+
+    fn make_config_with_pointer(pointer_bindings: Vec<PointerBindingConfig>) -> Config {
+        make_config_full(Vec::new(), pointer_bindings)
+    }
+
+    fn make_config_full(
+        keybindings: Vec<KeyBindingConfig>,
+        pointer_bindings: Vec<PointerBindingConfig>,
+    ) -> Config {
         let (
             decorations,
             border_width,
@@ -619,6 +716,7 @@ mod tests {
             resize_delta_ratio,
             resize_delta_percent,
             keybindings,
+            pointer_bindings,
             rules: Vec::new(),
         }
     }
@@ -794,6 +892,7 @@ mod tests {
             resize_delta_ratio: None,
             resize_delta_percent: None,
             keybindings: Vec::new(),
+            pointer_bindings: Vec::new(),
             rules: Vec::new(),
         };
 
@@ -803,6 +902,75 @@ mod tests {
         assert_eq!(config.border_width, Some(2));
         assert_eq!(config.border_color_focused, Some(0xff0000ff));
         assert_eq!(config.border_color_unfocused, Some(0x00ff00ff));
+    }
+
+    #[test]
+    fn merge_keeps_user_pointer_bindings() {
+        // Before the fix, `merge` never copied `pointer_bindings`, so a user
+        // config's pointer bindings were silently dropped in favour of defaults.
+        let default_move =
+            pointer_binding(KeyBindingTarget::Primary, 0x110, SUPER, PointerOp::Move);
+        let user_resize =
+            pointer_binding(KeyBindingTarget::Primary, 0x111, SUPER, PointerOp::Resize);
+
+        let mut config = make_config(Vec::new());
+        config.pointer_bindings = vec![default_move.clone()];
+
+        config.merge(make_config_with_pointer(vec![user_resize.clone()]));
+
+        // The user binding is preserved (appended, distinct identity), and the
+        // default is retained.
+        assert_eq!(config.pointer_bindings.len(), 2);
+        assert_eq!(config.pointer_bindings[0].op, PointerOp::Move);
+        assert_eq!(config.pointer_bindings[1].op, PointerOp::Resize);
+    }
+
+    #[test]
+    fn merge_overrides_matching_pointer_binding_identity() {
+        let default_move =
+            pointer_binding(KeyBindingTarget::Primary, 0x110, SUPER, PointerOp::Move);
+        // Same trigger (target/button/modifiers) but a different op: the user
+        // binding overrides the default in place rather than appending a
+        // duplicate, matching keybinding merge semantics.
+        let override_resize =
+            pointer_binding(KeyBindingTarget::Primary, 0x110, SUPER, PointerOp::Resize);
+
+        let mut config = make_config(Vec::new());
+        config.pointer_bindings = vec![default_move];
+
+        config.merge(make_config_with_pointer(vec![override_resize]));
+
+        assert_eq!(
+            config.pointer_bindings.len(),
+            1,
+            "matching pointer-binding trigger must override, not append"
+        );
+        assert_eq!(
+            config.pointer_bindings[0].op,
+            PointerOp::Resize,
+            "user op must replace default op on override"
+        );
+    }
+
+    #[test]
+    fn merge_appends_distinct_pointer_binding_trigger() {
+        let default_move =
+            pointer_binding(KeyBindingTarget::Primary, 0x110, SUPER, PointerOp::Move);
+        let user_resize =
+            pointer_binding(KeyBindingTarget::Primary, 0x111, SUPER, PointerOp::Resize);
+
+        let mut config = make_config(Vec::new());
+        config.pointer_bindings = vec![default_move];
+
+        config.merge(make_config_with_pointer(vec![user_resize]));
+
+        assert_eq!(
+            config.pointer_bindings.len(),
+            2,
+            "distinct trigger must append"
+        );
+        assert_eq!(config.pointer_bindings[0].op, PointerOp::Move);
+        assert_eq!(config.pointer_bindings[1].op, PointerOp::Resize);
     }
 
     #[test]

@@ -6,12 +6,20 @@
 //!
 //! Layout policy is intentionally not handled here.
 //! The BSP tree layout engine should consume state changes and window metadata from this module.
-use super::{keybindings::XkbBindingId, output::OutputId, seat::SeatId, wm::WMState};
+use super::keybindings::XkbBindingId;
+use super::output::OutputId;
+use super::pointerbindings::PointerBindingId;
+use super::seat::SeatId;
+use super::wm::WMState;
+use crate::config::PointerOp;
 use crate::protocol::river::river_layer_shell_v1::client::river_layer_shell_output_v1::RiverLayerShellOutputV1;
 use crate::protocol::river::river_layer_shell_v1::client::river_layer_shell_seat_v1::RiverLayerShellSeatV1;
 use crate::protocol::river::river_layer_shell_v1::client::river_layer_shell_v1::RiverLayerShellV1;
 use crate::protocol::river::river_window_management_v1::client::river_node_v1::RiverNodeV1;
 use crate::protocol::river::river_window_management_v1::client::river_output_v1::RiverOutputV1;
+use crate::protocol::river::river_window_management_v1::client::river_pointer_binding_v1::{
+    Event as PointerBindingEvent, RiverPointerBindingV1,
+};
 use crate::protocol::river::river_window_management_v1::client::river_seat_v1::RiverSeatV1;
 use crate::protocol::river::river_window_management_v1::client::river_window_manager_v1::EVT_OUTPUT_OPCODE;
 use crate::protocol::river::river_window_management_v1::client::river_window_manager_v1::EVT_SEAT_OPCODE;
@@ -109,6 +117,14 @@ impl Dispatch<RiverWindowManagerV1, ()> for WMState {
 
                     if state.configure_keybindings(qh) {
                         state.xkb_bindings_dirty = false;
+                    }
+                }
+                if state.pointer_bindings_dirty {
+                    // Destroy stale pointer bindings before creating/enabling the desired set.
+                    state.destroy_pending_pointer_bindings();
+
+                    if state.configure_pointer_bindings(qh) {
+                        state.pointer_bindings_dirty = false;
                     }
                 }
                 proxy.manage_finish();
@@ -295,12 +311,32 @@ impl Dispatch<RiverWindowV1, ()> for WMState {
                     target: "fenestre::state::handlers",
                     "RiverWindowV1 event: Pointer move requested for seat {seat:?}"
                 );
+                let Some(window_id) = state.windows_by_proxy.get(proxy).copied() else {
+                    return;
+                };
+                let Some(seat_id) = state.seats_by_proxy.get(&seat).copied() else {
+                    return;
+                };
+                let event = super::events::Event::PointerMoveRequested { window_id, seat_id };
+                state.handle_event(event);
             }
             Event::PointerResizeRequested { seat, edges } => {
                 debug!(
                     target: "fenestre::state::handlers",
                     "RiverWindowV1 event: Pointer resize requested for seat {seat:?} with edges {edges:?}"
                 );
+                let Some(window_id) = state.windows_by_proxy.get(proxy).copied() else {
+                    return;
+                };
+                let Some(seat_id) = state.seats_by_proxy.get(&seat).copied() else {
+                    return;
+                };
+                let event = super::events::Event::PointerResizeRequested {
+                    window_id,
+                    seat_id,
+                    edges: edges.into(),
+                };
+                state.handle_event(event);
             }
             Event::ShowWindowMenuRequested { x, y } => {
                 debug!(
@@ -532,12 +568,22 @@ impl Dispatch<RiverSeatV1, ()> for WMState {
                     target: "fenestre::state::handlers",
                     "RiverSeatV1 event: Pointer moved by dx {dx} and dy {dy})"
                 );
+                let Some(seat_id) = state.seats_by_proxy.get(proxy).copied() else {
+                    return;
+                };
+                let event = super::events::Event::OpDelta { seat_id, dx, dy };
+                state.handle_event(event);
             }
             Event::OpRelease => {
                 debug!(
                     target: "fenestre::state::handlers",
                     "RiverSeatV1 event: Pointer operation input released"
                 );
+                let Some(seat_id) = state.seats_by_proxy.get(proxy).copied() else {
+                    return;
+                };
+                let event = super::events::Event::OpRelease { seat_id };
+                state.handle_event(event);
             }
             Event::PointerPosition { x, y } => {
                 debug!(
@@ -601,6 +647,67 @@ impl Dispatch<RiverXkbBindingV1, XkbBindingId> for WMState {
             }
             XkbBindingEvent::Released => {}
             XkbBindingEvent::StopRepeat => {}
+        }
+    }
+}
+
+impl Dispatch<RiverPointerBindingV1, PointerBindingId> for WMState {
+    fn event(
+        state: &mut Self,
+        _proxy: &RiverPointerBindingV1,
+        event: <RiverPointerBindingV1 as wayland_client::Proxy>::Event,
+        data: &PointerBindingId,
+        _conn: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            PointerBindingEvent::Pressed => {
+                let Some(binding) = state.pointer_bindings.get(data) else {
+                    debug!(
+                        target: "fenestre::state::handlers",
+                        "Pressed unknown pointer binding id={data:?}"
+                    );
+                    return;
+                };
+
+                debug!(
+                    target: "fenestre::state::handlers",
+                    "Pressed pointer binding id={:?} seat_id={:?} button=0x{:x} modifiers=0x{:x} op={:?}",
+                    data,
+                    binding.seat_id,
+                    binding.button,
+                    binding.modifiers,
+                    binding.op,
+                );
+
+                let Some(focused) = state.focused_window else {
+                    return;
+                };
+                match binding.op {
+                    PointerOp::Move => {
+                        state.handle_event(super::events::Event::PointerMoveRequested {
+                            window_id: focused,
+                            seat_id: binding.seat_id,
+                        });
+                    }
+                    PointerOp::Resize => {
+                        let edges = state.compute_resize_edges(binding.seat_id, focused);
+                        state.handle_event(super::events::Event::PointerResizeRequested {
+                            window_id: focused,
+                            seat_id: binding.seat_id,
+                            edges,
+                        });
+                    }
+                }
+
+                let _ = qh;
+            }
+            PointerBindingEvent::Released => {
+                debug!(
+                    target: "fenestre::state::handlers",
+                    "Released pointer binding id={data:?}"
+                );
+            }
         }
     }
 }

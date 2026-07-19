@@ -3,7 +3,8 @@
 //! This module does not know about Lua, TOML, YAML, or any file format.
 //! It only converts parsed strings into Fenestre's shared config types.
 use super::{
-    ConfigError, KeyBindingConfig, KeyBindingTarget, LayoutConfig, Result, RulePattern, WindowRule,
+    ConfigError, KeyBindingConfig, KeyBindingTarget, LayoutConfig, PointerBindingConfig, PointerOp,
+    Result, RulePattern, WindowRule,
 };
 use crate::command::Command;
 use crate::layout::Rect;
@@ -362,6 +363,67 @@ pub(super) fn build_keybinding(
 
     parse_keybinding(target, keysym, &modifier_refs, &command_refs)
         .ok_or_else(|| ConfigError::InvalidConfig("Invalid keybinding".to_string()))
+}
+
+/// Parse a pointer button name or code into a Linux input event code.
+///
+/// Accepts symbolic names (`BTN_LEFT`, `BTN_RIGHT`, `BTN_MIDDLE`) and raw
+/// decimal/hex (`0x110`) codes. Returns `None` for unknown names or invalid
+/// numbers, so callers can reject the binding.
+fn parse_button(name: &str) -> Option<u32> {
+    match name.to_ascii_uppercase().as_str() {
+        "BTN_LEFT" | "LEFT" => Some(0x110),
+        "BTN_RIGHT" | "RIGHT" => Some(0x111),
+        "BTN_MIDDLE" | "MIDDLE" => Some(0x112),
+        "BTN_SIDE" => Some(0x113),
+        "BTN_EXTRA" => Some(0x114),
+        other => {
+            let trimmed = other
+                .strip_prefix("0X")
+                .or_else(|| other.strip_prefix("0x"));
+            if let Some(hex) = trimmed {
+                u32::from_str_radix(hex, 16).ok()
+            } else {
+                name.parse::<u32>().ok()
+            }
+        }
+    }
+}
+
+/// Parse a pointer operation name into a `PointerOp`.
+fn parse_pointer_op(name: &str) -> Option<PointerOp> {
+    match name.to_ascii_lowercase().as_str() {
+        "move" => Some(PointerOp::Move),
+        "resize" => Some(PointerOp::Resize),
+        _ => None,
+    }
+}
+
+/// Build a validated `PointerBindingConfig` from parsed strings.
+pub(super) fn build_pointer_binding(
+    target: Option<&str>,
+    button: &str,
+    modifiers: &[String],
+    op: &str,
+) -> Result<PointerBindingConfig> {
+    let target = parse_target(target).ok_or_else(|| {
+        ConfigError::InvalidConfig(format!("Invalid pointer binding target: {target:?}"))
+    })?;
+    let button_code = parse_button(button)
+        .ok_or_else(|| ConfigError::InvalidConfig(format!("Invalid button: {button}")))?;
+    let modifier_refs: Vec<&str> = modifiers.iter().map(String::as_str).collect();
+    let modifier_mask = parse_modifiers(modifier_refs).ok_or_else(|| {
+        ConfigError::InvalidConfig("Invalid pointer binding modifiers".to_string())
+    })?;
+    let op = parse_pointer_op(op)
+        .ok_or_else(|| ConfigError::InvalidConfig(format!("Invalid pointer op: {op}")))?;
+
+    Ok(PointerBindingConfig {
+        target,
+        button: button_code,
+        modifiers: modifier_mask,
+        op,
+    })
 }
 
 #[cfg(test)]

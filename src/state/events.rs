@@ -90,4 +90,30 @@ pub(crate) enum Event {
         seat_id: SeatId,
         mode: super::seat::LayerShellFocus,
     },
+    /// River requested an interactive pointer move of a window. The window
+    /// manager should start an `op_start_pointer` operation and track deltas.
+    PointerMoveRequested {
+        window_id: WindowId,
+        seat_id: SeatId,
+    },
+    /// River requested an interactive pointer resize of a window on the given
+    /// edges. The window manager should start an `op_start_pointer` operation
+    /// and transform deltas into a new size.
+    PointerResizeRequested {
+        window_id: WindowId,
+        seat_id: SeatId,
+        edges: u32,
+    },
+    /// Cumulative pointer displacement since the start of the active operation
+    /// for this seat. `dx`/`dy` are totals, not increments.
+    OpDelta {
+        seat_id: SeatId,
+        dx: i32,
+        dy: i32,
+    },
+    /// The input driving the active operation was released (all buttons up).
+    /// The operation itself is ended explicitly with `EndPointerOp`.
+    OpRelease {
+        seat_id: SeatId,
+    },
 }

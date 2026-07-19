@@ -112,7 +112,7 @@ scannable — move detailed explanations into `docs/`, not into this file.
 
 - A layout `rotate` command does not exist (no `Command::Rotate` variant). Focus
   cycling (`FocusNext` / `FocusPrevious`) is wired.
-- Pointer-driven move/resize is not implemented.
+- Pointer-driven move/resize is implemented (see `InteractiveOp` on `Seat` and the `StartPointerOp` / `EndPointerOp` / `SetCursor` effects); cumulative `op_delta` events drive a window's floating rect, clamped to its `DimensionsHint`.
 - IPC is not implemented.
 - `wayland-client` event_created_child is used for River child objects;
   manual child data hashing is commented out in `handlers.rs`.
@@ -157,5 +157,6 @@ with a River compositor that supports:
 
 - `river_window_management_v1` (version 5)
 - `river_xkb_bindings_v1` (version 3)
+- `river_layer_shell_v1` (layer-shell exclusive zones and keyboard focus)
 
 Building requires Rust 1.88+ (edition 2024) and Wayland development libraries.

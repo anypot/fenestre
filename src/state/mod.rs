@@ -13,6 +13,7 @@ mod focus;
 mod handlers;
 mod keybindings;
 mod output;
+mod pointerbindings;
 mod reassign;
 pub mod rule;
 mod scene;

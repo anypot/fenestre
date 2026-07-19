@@ -3,7 +3,7 @@
 //! Defaults provide a usable baseline when no user config is supplied.
 //! User config is merged over these defaults by keybinding identity.
 use super::KeyBindingTarget;
-use super::{Config, KeyBindingConfig, LayoutConfig};
+use super::{Config, KeyBindingConfig, LayoutConfig, PointerBindingConfig, PointerOp};
 use crate::command::Command;
 use xkbcommon::xkb::keysyms::*;
 
@@ -11,6 +11,10 @@ const SUPER: u32 = 64;
 const SHIFT: u32 = 1;
 const CTRL: u32 = 4;
 const ALT: u32 = 8;
+
+/// Linux input event codes for pointer buttons (from linux/input-event-codes.h).
+const BTN_LEFT: u32 = 0x110;
+const BTN_RIGHT: u32 = 0x111;
 
 fn binding(
     target: KeyBindingTarget,
@@ -264,6 +268,23 @@ pub fn defaults() -> Config {
                 SUPER | CTRL,
                 Command::FocusOutputRight,
             ),
+        ],
+        pointer_bindings: vec![
+            // Super + Left mouse: drag to move the focused window.
+            PointerBindingConfig {
+                target: KeyBindingTarget::Primary,
+                button: BTN_LEFT,
+                modifiers: SUPER,
+                op: PointerOp::Move,
+            },
+            // Super + Right mouse: drag to resize the focused window. The grab
+            // edges are computed from the pointer position within the window.
+            PointerBindingConfig {
+                target: KeyBindingTarget::Primary,
+                button: BTN_RIGHT,
+                modifiers: SUPER,
+                op: PointerOp::Resize,
+            },
         ],
         rules: Vec::new(),
     }
