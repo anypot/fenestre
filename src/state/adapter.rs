@@ -296,6 +296,12 @@ impl WMState {
         // Carry OutputId as dispatch user-data so `non_exclusive_area` events
         // can be routed back to the owning output.
         output.river_layer_shell_output = Some(shell.get_output(river_output, qh, output_id));
+        // The proxy just became available: if it belongs to the currently
+        // focused output, flag the default for re-emission on the next manage
+        // (it may now be routable where it previously was not).
+        if self.focused_output == Some(output_id) {
+            self.layer_shell_default_dirty = true;
+        }
     }
 
     /// Ensure a `river_layer_shell_seat_v1` child proxy exists for the given

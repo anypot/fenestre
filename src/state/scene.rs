@@ -279,8 +279,8 @@ impl WMState {
             }
         }
 
-        if let Some(default_output) = self.focused_output
-            && self.last_layer_shell_default != Some(default_output)
+        if self.layer_shell_default_dirty
+            && let Some(default_output) = self.focused_output
             && self.layer_shell.is_some()
             && self
                 .outputs
@@ -290,8 +290,8 @@ impl WMState {
             effects.push(Effect::SetLayerShellDefault {
                 output_id: default_output,
             });
-            self.last_layer_shell_default = Some(default_output);
         }
+        self.layer_shell_default_dirty = false;
 
         self.last_manage_scene = desired;
         self.render_order_cache.clear();
@@ -531,6 +531,7 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::state::effects::ALL_EDGES;
+    use crate::state::events::Event;
     use crate::state::output::Output;
     use crate::state::window::Window;
 
@@ -776,5 +777,26 @@ mod tests {
         assert!(z1_b <= z1_a, "previously focused window demotes");
         assert!(z2_b > z2_a, "newly focused window promotes");
         assert!(z2_b > z1_b, "newly focused floating window ends on top");
+    }
+
+    // Regression test: the layer-shell default must be flagged for re-emission
+    // when the first output is created (it becomes the focused output) even
+    // though no focus *change* occurs. Without this flag, `apply_manage` would
+    // only re-fire `SetLayerShellDefault` on a later focus change, leaving an
+    // output-less layer client (e.g. swaybg launched before the first
+    // focus-changing manage) without a default output.
+    #[test]
+    fn output_created_without_prior_focus_flags_layer_shell_default() {
+        let mut state = WMState::new();
+        assert!(!state.layer_shell_default_dirty);
+
+        let o1 = OutputId(1);
+        state.handle_event(Event::OutputCreated { output_id: o1 });
+
+        assert_eq!(state.focused_output, Some(o1));
+        assert!(
+            state.layer_shell_default_dirty,
+            "first OutputCreated must flag the layer-shell default for emission"
+        );
     }
 }

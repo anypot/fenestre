@@ -102,7 +102,7 @@ impl WMState {
         self.focus_stack.insert(0, window_id);
         self.focused_window = Some(window_id);
         if let Some(window) = self.windows.get(&window_id) {
-            self.focused_output = Some(window.output_id);
+            self.set_focused_output(window.output_id);
         }
     }
 
@@ -137,7 +137,7 @@ impl WMState {
             if let Some(new_focused) = self.focused_window
                 && let Some(window) = self.windows.get(&new_focused)
             {
-                self.focused_output = Some(window.output_id);
+                self.set_focused_output(window.output_id);
             }
         }
 

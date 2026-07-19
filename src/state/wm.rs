@@ -3,7 +3,7 @@
 //! Owns all mutable compositor state: River protocol proxies, windows, outputs,
 //! seats, runtime keybindings, focus state, configuration, layout trees, and
 //! pending River-managed state changes. Scene-related fields (`last_manage_scene`,
-//! `last_render_scene`, `last_layer_shell_default`, `render_order_cache`) and
+//! `last_render_scene`, `render_order_cache`) and
 //! the declarative reconciler (`desired_scene`, `apply_manage`, `apply_render`)
 //! are defined in `scene.rs` as an extension impl on `WMState`.
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -34,7 +34,7 @@ pub(super) struct OpRect {
 /// `WMState` stores River protocol proxies, windows, outputs, seats,
 /// runtime keybindings, focus state, configuration, layout trees, and pending
 /// River-managed state changes. The scene snapshot fields (`last_manage_scene`,
-/// `last_render_scene`, `last_layer_shell_default`, `render_order_cache`) are
+/// `last_render_scene`, `render_order_cache`) are
 /// owned by the `scene` module — mutate them only through `apply_manage` or
 /// `apply_render`.
 ///
@@ -90,11 +90,14 @@ pub(crate) struct WMState {
     ///
     /// Owned by the scene module — mutate via `apply_manage` / `apply_render`.
     pub(super) last_manage_scene: SceneSnapshot,
-    /// Output last announced as the layer-shell default via `set_default`, used
-    /// to emit that effect only on change (it is global across outputs).
+    /// Set whenever the layer-shell default may need re-emitting (focus change,
+    /// first focused output, or a freshly created layer-shell proxy); flushed
+    /// (and cleared) inside `apply_manage`. Keeps `set_default` inside manage
+    /// sequences per the River protocol constraint.
     ///
-    /// Owned by the scene module — mutate via `apply_manage` / `apply_render`.
-    pub(super) last_layer_shell_default: Option<OutputId>,
+    /// Owned by the scene module — set via `set_focused_output` / adapter, cleared
+    /// in `apply_manage`.
+    pub(super) layer_shell_default_dirty: bool,
     /// Snapshot of the last desired scene from a render cycle, used to diff
     /// render-phase effects (position, z-order, borders).
     ///
@@ -160,7 +163,7 @@ impl WMState {
             next_pointer_binding_id: PointerBindingId(0),
             render_order_cache: Vec::new(),
             last_manage_scene: Vec::new(),
-            last_layer_shell_default: None,
+            layer_shell_default_dirty: false,
             last_render_scene: Vec::new(),
             windows_by_proxy: HashMap::new(),
             outputs_by_proxy: HashMap::new(),
@@ -404,6 +407,20 @@ impl WMState {
         let output_id = self.windows.get(&window_id)?.output_id;
         let tree = self.output_trees.get(&output_id)?;
         tree.window_state(window_id.0)
+    }
+
+    /// Set `focused_output`, flagging the layer-shell default for re-emission
+    /// whenever the value actually changes.
+    ///
+    /// The flag is consumed (and cleared) only inside `apply_manage`, so the
+    /// resulting `set_default` protocol call stays within a manage sequence, as
+    /// required by River. Callers that need a manage cycle should still request
+    /// one separately.
+    pub(super) fn set_focused_output(&mut self, output_id: OutputId) {
+        if self.focused_output != Some(output_id) {
+            self.focused_output = Some(output_id);
+            self.layer_shell_default_dirty = true;
+        }
     }
 
     /// Ensure `focused_output` points at a live output.
@@ -683,13 +700,13 @@ impl WMState {
                     .collect();
                 for orphaned_id in orphaned {
                     if self.focused_output == Some(orphaned_id) {
-                        self.focused_output = Some(output_id);
+                        self.set_focused_output(output_id);
                     }
                     self.reassign_output(orphaned_id, output_id);
                 }
 
                 if self.focused_output.is_none() {
-                    self.focused_output = Some(output_id);
+                    self.set_focused_output(output_id);
                 }
             }
             Event::SeatCreated { seat_id } => {

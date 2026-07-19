@@ -296,7 +296,7 @@ impl WMState {
 
     fn focus_output(&mut self, output_id: OutputId) {
         if self.outputs.contains_key(&output_id) && self.focused_output != Some(output_id) {
-            self.focused_output = Some(output_id);
+            self.set_focused_output(output_id);
             if let Some(tree) = self.focused_tree()
                 && let Some(window_id) = tree
                     .focused_window()
