@@ -155,7 +155,7 @@ impl Dispatch<RiverWindowManagerV1, ()> for WMState {
                 state.ensure_focused_output();
                 let target_output = state.focused_output.unwrap_or_else(|| {
                     let output_id = state.next_output_id();
-                    state.focused_output = Some(output_id);
+                    state.set_focused_output(output_id);
                     output_id
                 });
                 let event = super::events::Event::WindowCreated {
