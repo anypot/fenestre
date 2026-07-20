@@ -44,6 +44,9 @@ pub(crate) struct WMState {
     pub(super) wm: Option<crate::protocol::river::river_window_management_v1::client::river_window_manager_v1::RiverWindowManagerV1>,
     pub(super) xkb_bindings: Option<crate::protocol::river::river_xkb_bindings_v1::client::river_xkb_bindings_v1::RiverXkbBindingsV1>,
     pub(super) layer_shell: Option<crate::protocol::river::river_layer_shell_v1::client::river_layer_shell_v1::RiverLayerShellV1>,
+    pub(super) input_manager: Option<crate::protocol::river::river_input_management_v1::client::river_input_manager_v1::RiverInputManagerV1>,
+    pub(super) libinput_config: Option<crate::protocol::river::river_libinput_config_v1::client::river_libinput_config_v1::RiverLibinputConfigV1>,
+    pub(super) xkb_config: Option<crate::protocol::river::river_xkb_config_v1::client::river_xkb_config_v1::RiverXkbConfigV1>,
 
     pub(super) config: Option<Config>,
     pub(super) config_path: Option<PathBuf>,
@@ -77,6 +80,18 @@ pub(crate) struct WMState {
     /// Window IDs to close during the next manage sequence.
     pub(super) pending_closes: Vec<WindowId>,
 
+    /// Pending keymap object waiting for the `river_xkb_keymap_v1.success` event
+    /// before being applied to keyboards.
+    pub(super) pending_keymap: Option<
+        crate::protocol::river::river_xkb_config_v1::client::river_xkb_keymap_v1::RiverXkbKeymapV1,
+    >,
+    /// Owned memfd backing `pending_keymap`, kept alive until the keymap
+    /// is transmitted or creation fails.
+    pub(super) pending_keymap_fd: Option<std::os::unix::io::OwnedFd>,
+    /// Keyboard layout config waiting to be applied after the current in-flight
+    /// keymap completes.
+    pub(super) pending_keymap_layout: Option<crate::config::KeyboardLayoutConfig>,
+
     /// Pending split direction for the next spawned window.
     pub(super) pending_split: Option<crate::layout::SplitDirection>,
 
@@ -84,11 +99,6 @@ pub(crate) struct WMState {
     ///
     /// Owned by the scene module — mutate via `apply_manage` / `apply_render`.
     pub(super) render_order_cache: Vec<WindowId>,
-
-    /// Snapshot of the last desired scene from a manage cycle, used to diff
-    /// manage-phase effects (dimensions, fullscreen, server-side decorations).
-    ///
-    /// Owned by the scene module — mutate via `apply_manage` / `apply_render`.
     pub(super) last_manage_scene: SceneSnapshot,
     /// Set whenever the layer-shell default may need re-emitting (focus change,
     /// first focused output, or a freshly created layer-shell proxy); flushed
@@ -104,10 +114,19 @@ pub(crate) struct WMState {
     /// Owned by the scene module — mutate via `apply_manage` / `apply_render`.
     pub(super) last_render_scene: SceneSnapshot,
 
+    pub(super) input_devices: HashMap<crate::state::input::DeviceId, crate::state::input::InputDeviceState>,
+    pub(super) input_devices_by_proxy: HashMap<crate::protocol::river::river_input_management_v1::client::river_input_device_v1::RiverInputDeviceV1, crate::state::input::DeviceId>,
+    pub(super) input_devices_by_name: HashMap<String, crate::state::input::DeviceId>,
+    pub(super) libinput_devices: HashMap<crate::state::input::DeviceId, crate::state::input::LibinputDeviceState>,
+    pub(super) libinput_devices_by_proxy: HashMap<crate::protocol::river::river_libinput_config_v1::client::river_libinput_device_v1::RiverLibinputDeviceV1, crate::state::input::DeviceId>,
+    pub(super) xkb_keyboards: HashMap<crate::state::input::DeviceId, crate::state::input::XkbKeyboardState>,
+    pub(super) xkb_keyboards_by_proxy: HashMap<crate::protocol::river::river_xkb_config_v1::client::river_xkb_keyboard_v1::RiverXkbKeyboardV1, crate::state::input::DeviceId>,
+
     /// Next identifiers for internal ID allocation.
     next_window_id: WindowId,
     next_output_id: OutputId,
     next_seat_id: SeatId,
+    next_device_id: crate::state::input::DeviceId,
     next_xkb_binding_id: XkbBindingId,
     next_pointer_binding_id: PointerBindingId,
 
@@ -131,6 +150,9 @@ impl WMState {
             wm: None,
             xkb_bindings: None,
             layer_shell: None,
+            input_manager: None,
+            libinput_config: None,
+            xkb_config: None,
             config: None,
             config_path: None,
 
@@ -155,10 +177,14 @@ impl WMState {
             pending_focus: None,
             pending_closes: Vec::new(),
             pending_split: None,
+            pending_keymap: None,
+            pending_keymap_fd: None,
+            pending_keymap_layout: None,
 
             next_window_id: WindowId(0),
             next_output_id: OutputId(0),
             next_seat_id: SeatId(0),
+            next_device_id: crate::state::input::DeviceId(0),
             next_xkb_binding_id: XkbBindingId(0),
             next_pointer_binding_id: PointerBindingId(0),
             render_order_cache: Vec::new(),
@@ -169,6 +195,13 @@ impl WMState {
             outputs_by_proxy: HashMap::new(),
             seats_by_proxy: HashMap::new(),
             windows_by_output: HashMap::new(),
+            input_devices: HashMap::new(),
+            input_devices_by_proxy: HashMap::new(),
+            input_devices_by_name: HashMap::new(),
+            libinput_devices: HashMap::new(),
+            libinput_devices_by_proxy: HashMap::new(),
+            xkb_keyboards: HashMap::new(),
+            xkb_keyboards_by_proxy: HashMap::new(),
         };
 
         state.load_default_config();
@@ -208,6 +241,13 @@ impl WMState {
     pub(super) fn next_pointer_binding_id(&mut self) -> PointerBindingId {
         let id = self.next_pointer_binding_id;
         self.next_pointer_binding_id.0 += 1;
+        id
+    }
+
+    /// Allocate the next internal input device identifier.
+    pub(super) fn next_device_id(&mut self) -> crate::state::input::DeviceId {
+        let id = self.next_device_id;
+        self.next_device_id.0 += 1;
         id
     }
 

@@ -203,6 +203,88 @@ struct PointerBindingIdentity {
     modifiers: u32,
 }
 
+/// Input device acceleration profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccelProfile {
+    None,
+    Flat,
+    Adaptive,
+    Custom,
+}
+
+/// Tap-to-click button mapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TapButtonMap {
+    Lrm,
+    Lmr,
+}
+
+/// Scroll method for pointer devices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollMethod {
+    None,
+    TwoFinger,
+    Edge,
+    OnButtonDown,
+}
+
+/// Drag lock state for touchpad devices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DragLockState {
+    Disabled,
+    EnabledTimeout,
+    EnabledSticky,
+}
+
+/// Click method for touchpad devices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClickMethod {
+    None,
+    ButtonAreas,
+    Clickfinger,
+}
+
+/// Send events mode for input devices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendEventsMode {
+    Enabled,
+    Disabled,
+    DisabledOnExternalMouse,
+}
+
+/// Keyboard layout configuration.
+#[derive(Debug, Clone)]
+pub struct KeyboardLayoutConfig {
+    pub rules: Option<String>,
+    pub model: Option<String>,
+    pub layout: String,
+    pub variant: Option<String>,
+    pub options: Option<String>,
+}
+
+/// Per-input-device configuration.
+#[derive(Debug, Clone)]
+pub struct InputDeviceConfig {
+    pub name: String,
+    pub accel_profile: Option<AccelProfile>,
+    pub accel_speed: Option<f64>,
+    pub scroll_factor: Option<f64>,
+    pub repeat_rate: Option<i32>,
+    pub repeat_delay: Option<i32>,
+    pub tap: Option<bool>,
+    pub tap_button_map: Option<TapButtonMap>,
+    pub natural_scroll: Option<bool>,
+    pub left_handed: Option<bool>,
+    pub scroll_method: Option<ScrollMethod>,
+    pub middle_emulation: Option<bool>,
+    pub dwt: Option<bool>,
+    pub send_events: Option<SendEventsMode>,
+    pub drag: Option<bool>,
+    pub drag_lock: Option<DragLockState>,
+    pub click_method: Option<ClickMethod>,
+    pub rotation: Option<u32>,
+}
+
 /// Output-relative window sizing and positioning defaults.
 ///
 /// Covers the tiling area (gap, margins) and the default size used for
@@ -276,6 +358,12 @@ pub struct Config {
 
     /// Per-window rules applied on metadata arrival.
     pub rules: Vec<WindowRule>,
+
+    /// Keyboard layout configuration.
+    pub keyboard_layout: Option<KeyboardLayoutConfig>,
+
+    /// Per-input-device configuration matched by exact device name.
+    pub input_devices: Vec<InputDeviceConfig>,
 }
 
 /// Override an `Option` field when the source value is `Some`.
@@ -431,6 +519,13 @@ impl Config {
         apply_if_some(&mut self.resize_delta_percent, other.resize_delta_percent);
         // Replaced, not identity-merged: defaults ship no rules by design.
         self.rules = other.rules;
+        // Replaced: defaults ship no keyboard_layout or input_devices by design.
+        if other.keyboard_layout.is_some() {
+            self.keyboard_layout = other.keyboard_layout;
+        }
+        if !other.input_devices.is_empty() {
+            self.input_devices = other.input_devices;
+        }
         // Pre-index defaults for O(1) identity lookup instead of linear scan.
         let default_indices: HashMap<KeyBindingIdentity, usize> = self
             .keybindings
@@ -718,6 +813,8 @@ mod tests {
             keybindings,
             pointer_bindings,
             rules: Vec::new(),
+            keyboard_layout: None,
+            input_devices: Vec::new(),
         }
     }
 
@@ -894,6 +991,8 @@ mod tests {
             keybindings: Vec::new(),
             pointer_bindings: Vec::new(),
             rules: Vec::new(),
+            keyboard_layout: None,
+            input_devices: Vec::new(),
         };
 
         config.merge(override_config);

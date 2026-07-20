@@ -99,4 +99,7 @@ pub(crate) enum Command {
 
     /// Shrink the focused window's size in the given direction.
     ResizeShrink { direction: FocusDirection },
+
+    /// Cycle to the next keyboard layout.
+    CycleKeyboardLayout,
 }

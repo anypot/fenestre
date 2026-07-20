@@ -11,6 +11,7 @@ mod effects;
 mod events;
 mod focus;
 mod handlers;
+mod input;
 mod keybindings;
 mod output;
 mod pointerbindings;

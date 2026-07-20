@@ -12,9 +12,19 @@ use super::pointerbindings::PointerBindingId;
 use super::seat::SeatId;
 use super::wm::WMState;
 use crate::config::PointerOp;
+use crate::protocol::river::river_input_management_v1::client::river_input_device_v1::RiverInputDeviceV1;
+use crate::protocol::river::river_input_management_v1::client::river_input_manager_v1::{
+    EVT_INPUT_DEVICE_OPCODE, RiverInputManagerV1,
+};
 use crate::protocol::river::river_layer_shell_v1::client::river_layer_shell_output_v1::RiverLayerShellOutputV1;
 use crate::protocol::river::river_layer_shell_v1::client::river_layer_shell_seat_v1::RiverLayerShellSeatV1;
 use crate::protocol::river::river_layer_shell_v1::client::river_layer_shell_v1::RiverLayerShellV1;
+use crate::protocol::river::river_libinput_config_v1::client::river_libinput_accel_config_v1::RiverLibinputAccelConfigV1;
+use crate::protocol::river::river_libinput_config_v1::client::river_libinput_config_v1::{
+    EVT_LIBINPUT_DEVICE_OPCODE, RiverLibinputConfigV1,
+};
+use crate::protocol::river::river_libinput_config_v1::client::river_libinput_device_v1::RiverLibinputDeviceV1;
+use crate::protocol::river::river_libinput_config_v1::client::river_libinput_result_v1::RiverLibinputResultV1;
 use crate::protocol::river::river_window_management_v1::client::river_node_v1::RiverNodeV1;
 use crate::protocol::river::river_window_management_v1::client::river_output_v1::RiverOutputV1;
 use crate::protocol::river::river_window_management_v1::client::river_pointer_binding_v1::{
@@ -30,7 +40,12 @@ use crate::protocol::river::river_xkb_bindings_v1::client::river_xkb_binding_v1:
     Event as XkbBindingEvent, RiverXkbBindingV1,
 };
 use crate::protocol::river::river_xkb_bindings_v1::client::river_xkb_bindings_v1::RiverXkbBindingsV1;
-use log::debug;
+use crate::protocol::river::river_xkb_config_v1::client::river_xkb_config_v1::{
+    EVT_XKB_KEYBOARD_OPCODE, RiverXkbConfigV1,
+};
+use crate::protocol::river::river_xkb_config_v1::client::river_xkb_keyboard_v1::RiverXkbKeyboardV1;
+use crate::protocol::river::river_xkb_config_v1::client::river_xkb_keymap_v1::RiverXkbKeymapV1;
+use log::{debug, warn};
 use wayland_client::{Connection, Dispatch, QueueHandle, protocol::wl_registry};
 
 impl Dispatch<wl_registry::WlRegistry, ()> for WMState {
@@ -69,7 +84,6 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WMState {
                     debug!(target: "fenestre::state::handlers", "Found river_layer_shell_v1");
                     let layer_shell: RiverLayerShellV1 = registry.bind(name, version, qh, ());
                     state.layer_shell = Some(layer_shell);
-                    // Cover the case where outputs/seats arrived before LayerShell global.
                     let output_ids: Vec<OutputId> = state.outputs.keys().copied().collect();
                     for o in output_ids {
                         state.ensure_layer_shell_output(o, qh);
@@ -77,6 +91,27 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WMState {
                     let seat_ids: Vec<SeatId> = state.seats.keys().copied().collect();
                     for s in seat_ids {
                         state.ensure_layer_shell_seat(s, qh);
+                    }
+                }
+                "river_input_manager_v1" => {
+                    debug!(target: "fenestre::state::handlers", "Found river_input_manager_v1");
+                    let mgr: RiverInputManagerV1 = registry.bind(name, version, qh, ());
+                    state.input_manager = Some(mgr);
+                }
+                "river_libinput_config_v1" => {
+                    debug!(target: "fenestre::state::handlers", "Found river_libinput_config_v1");
+                    let cfg: RiverLibinputConfigV1 = registry.bind(name, version, qh, ());
+                    state.libinput_config = Some(cfg);
+                    if state.config.is_some() {
+                        state.apply_device_config(qh);
+                    }
+                }
+                "river_xkb_config_v1" => {
+                    debug!(target: "fenestre::state::handlers", "Found river_xkb_config_v1");
+                    let cfg: RiverXkbConfigV1 = registry.bind(name, version, qh, ());
+                    state.xkb_config = Some(cfg);
+                    if state.config.is_some() {
+                        state.apply_device_config(qh);
                     }
                 }
                 _ => {}
@@ -757,7 +792,7 @@ impl Dispatch<RiverLayerShellSeatV1, SeatId> for WMState {
         state: &mut Self,
         _proxy: &RiverLayerShellSeatV1,
         event: <RiverLayerShellSeatV1 as wayland_client::Proxy>::Event,
-        data: &SeatId,
+        _data: &SeatId,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
@@ -768,8 +803,262 @@ impl Dispatch<RiverLayerShellSeatV1, SeatId> for WMState {
             Event::FocusNone => super::seat::LayerShellFocus::None,
         };
         state.handle_event(super::events::Event::SeatLayerShellFocus {
-            seat_id: *data,
+            seat_id: *_data,
             mode,
         });
+    }
+}
+
+impl Dispatch<RiverInputManagerV1, ()> for WMState {
+    fn event(
+        state: &mut Self,
+        _proxy: &RiverInputManagerV1,
+        event: <RiverInputManagerV1 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        use crate::protocol::river::river_input_management_v1::client::river_input_manager_v1::Event;
+        match event {
+            // `Finished` is ignored; Fenestre does not call `.stop()` on any
+            // Wayland global, relying on process exit and compositor cleanup.
+            Event::Finished => {}
+            Event::InputDevice { id } => {
+                let device_id = state.next_device_id();
+                debug!(target: "fenestre::state::handlers", "RiverInputManagerV1 event: Input device created, internal DeviceId={device_id:?}");
+                state.input_devices.insert(
+                    device_id,
+                    crate::state::input::InputDeviceState {
+                        proxy: id.clone(),
+                        name: String::new(),
+                        device_type: 0,
+                    },
+                );
+                state.input_devices_by_proxy.insert(id, device_id);
+            }
+        }
+    }
+
+    wayland_client::event_created_child!(WMState, RiverInputManagerV1, [
+        EVT_INPUT_DEVICE_OPCODE => (RiverInputDeviceV1, ()),
+    ]);
+}
+
+impl Dispatch<RiverInputDeviceV1, ()> for WMState {
+    fn event(
+        state: &mut Self,
+        proxy: &RiverInputDeviceV1,
+        event: <RiverInputDeviceV1 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        use crate::protocol::river::river_input_management_v1::client::river_input_device_v1::Event;
+        let Some(device_id) = state.input_devices_by_proxy.get(proxy).copied() else {
+            debug!(target: "fenestre::state::handlers", "RiverInputDeviceV1 event for unknown device");
+            return;
+        };
+        match event {
+            Event::Removed => {
+                debug!(target: "fenestre::state::handlers", "RiverInputDeviceV1 event: Device removed, id={device_id:?}");
+                state.remove_input_device(device_id, proxy);
+            }
+            Event::Type { _type } => {
+                if let Some(device) = state.input_devices.get_mut(&device_id) {
+                    device.device_type = _type.into();
+                }
+            }
+            Event::Name { name } => {
+                debug!(target: "fenestre::state::handlers", "RiverInputDeviceV1 event: Name={name:?}, id={device_id:?}");
+                if let Some(device) = state.input_devices.get_mut(&device_id) {
+                    let old_name = std::mem::replace(&mut device.name, name.clone());
+                    if !old_name.is_empty() {
+                        state.input_devices_by_name.remove(&old_name);
+                    }
+                    state.input_devices_by_name.insert(name, device_id);
+                }
+                // Fallback for protocol <v2: Name is the last event before the device
+                // is fully enumerated, so apply config here.
+                if state.config.is_some() {
+                    state.apply_device_config(qh);
+                }
+            }
+            Event::Done if state.config.is_some() => {
+                state.apply_device_config(qh);
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<RiverLibinputConfigV1, ()> for WMState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &RiverLibinputConfigV1,
+        event: <RiverLibinputConfigV1 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        _ = event;
+    }
+
+    wayland_client::event_created_child!(WMState, RiverLibinputConfigV1, [
+        EVT_LIBINPUT_DEVICE_OPCODE => (RiverLibinputDeviceV1, ()),
+    ]);
+}
+
+impl Dispatch<RiverLibinputDeviceV1, ()> for WMState {
+    fn event(
+        state: &mut Self,
+        proxy: &RiverLibinputDeviceV1,
+        event: <RiverLibinputDeviceV1 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        use crate::protocol::river::river_libinput_config_v1::client::river_libinput_device_v1::Event;
+        match event {
+            Event::Removed => {
+                debug!(target: "fenestre::state::handlers", "RiverLibinputDeviceV1 event: Removed");
+                state.remove_libinput_device(proxy);
+            }
+            Event::InputDevice { device } => {
+                if let Some(device_id) = state.input_devices_by_proxy.get(&device) {
+                    state.register_libinput_device(*device_id, proxy);
+                    if state.config.is_some() {
+                        state.apply_device_config(qh);
+                    }
+                }
+            }
+            Event::Done if state.config.is_some() => {
+                state.apply_device_config(qh);
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<RiverXkbConfigV1, ()> for WMState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &RiverXkbConfigV1,
+        event: <RiverXkbConfigV1 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        _ = event;
+    }
+
+    wayland_client::event_created_child!(WMState, RiverXkbConfigV1, [
+        EVT_XKB_KEYBOARD_OPCODE => (RiverXkbKeyboardV1, ()),
+    ]);
+}
+
+impl Dispatch<RiverXkbKeymapV1, ()> for WMState {
+    fn event(
+        state: &mut Self,
+        _proxy: &RiverXkbKeymapV1,
+        event: <RiverXkbKeymapV1 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        use crate::protocol::river::river_xkb_config_v1::client::river_xkb_keymap_v1::Event;
+        match event {
+            Event::Success => {
+                debug!(target: "fenestre::state::handlers", "RiverXkbKeymapV1 event: Success");
+                let pending_keymap = state.pending_keymap.take();
+                if let Some(keymap_obj) = pending_keymap {
+                    for kb_state in state.xkb_keyboards.values_mut() {
+                        kb_state.proxy.set_keymap(&keymap_obj);
+                    }
+                }
+                state.pending_keymap_fd.take();
+                if state.pending_keymap_layout.take().is_some() {
+                    state.apply_keyboard_layout(qh);
+                }
+            }
+            Event::Failure { error_msg } => {
+                debug!(target: "fenestre::state::handlers", "RiverXkbKeymapV1 event: Failure: {error_msg}");
+                state.pending_keymap = None;
+                state.pending_keymap_fd.take();
+                if state.pending_keymap_layout.take().is_some() {
+                    state.apply_keyboard_layout(qh);
+                }
+            }
+        }
+    }
+}
+
+impl Dispatch<RiverXkbKeyboardV1, ()> for WMState {
+    fn event(
+        state: &mut Self,
+        proxy: &RiverXkbKeyboardV1,
+        event: <RiverXkbKeyboardV1 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        use crate::protocol::river::river_xkb_config_v1::client::river_xkb_keyboard_v1::Event;
+        match event {
+            Event::Removed => {
+                debug!(target: "fenestre::state::handlers", "RiverXkbKeyboardV1 event: Removed");
+                state.remove_xkb_keyboard(proxy);
+            }
+            Event::InputDevice { device } => {
+                if let Some(device_id) = state.input_devices_by_proxy.get(&device) {
+                    state.register_xkb_keyboard(*device_id, proxy);
+                    if state.config.is_some() {
+                        state.apply_device_config(qh);
+                    }
+                }
+            }
+            Event::Layout { index, name } => {
+                debug!(target: "fenestre::state::handlers", "RiverXkbKeyboardV1 event: Layout {index}: {name:?}");
+                if let Some(device_id) = state.xkb_keyboards_by_proxy.get(proxy)
+                    && let Some(kb) = state.xkb_keyboards.get_mut(device_id)
+                {
+                    kb.current_layout = index;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<RiverLibinputResultV1, ()> for WMState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &RiverLibinputResultV1,
+        event: <RiverLibinputResultV1 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        use crate::protocol::river::river_libinput_config_v1::client::river_libinput_result_v1::Event;
+        match event {
+            Event::Success => {}
+            Event::Unsupported => {
+                debug!(target: "fenestre::state::handlers", "Libinput config unsupported for device");
+            }
+            Event::Invalid => {
+                warn!(target: "fenestre::state::handlers", "Libinput config invalid for device");
+            }
+        }
+    }
+}
+
+impl Dispatch<RiverLibinputAccelConfigV1, ()> for WMState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &RiverLibinputAccelConfigV1,
+        event: <RiverLibinputAccelConfigV1 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {}
     }
 }

@@ -448,7 +448,7 @@ mod tests {
         let config =
             load_from_toml(Path::new("examples/fenestre.toml")).expect("example should load");
 
-        assert_eq!(config.keybindings.len(), 29);
+        assert_eq!(config.keybindings.len(), 30);
         assert_eq!(config.rules.len(), 4);
         assert_eq!(config.layout.gap, Some(10));
         assert_eq!(config.border_width, Some(2));

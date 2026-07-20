@@ -12,7 +12,7 @@ use wayland_client::QueueHandle;
 
 impl WMState {
     /// Execute an internal command.
-    pub(super) fn run_command(&mut self, command: Command, _qh: &QueueHandle<Self>) {
+    pub(super) fn run_command(&mut self, command: Command, qh: &QueueHandle<Self>) {
         debug!(target: "fenestre::state::commands", "Running command: {command:?}");
 
         match command {
@@ -41,7 +41,7 @@ impl WMState {
             Command::SetTiled => self.set_focused_state(WindowState::Tiled),
             Command::Spawn { program, args } => self.spawn(&program, &args),
             Command::ExitRiver => self.exit_river(),
-            Command::ReloadConfig => self.reload_config(),
+            Command::ReloadConfig => self.reload_config(qh),
             Command::CloseFocused => self.close_focused(),
             Command::FocusOutputLeft => self.focus_output_direction(FocusDirection::Left),
             Command::FocusOutputRight => self.focus_output_direction(FocusDirection::Right),
@@ -53,6 +53,7 @@ impl WMState {
             Command::MoveDown => self.move_window(FocusDirection::Down),
             Command::ResizeExpand { direction } => self.resize_expand(direction),
             Command::ResizeShrink { direction } => self.resize_shrink(direction),
+            Command::CycleKeyboardLayout => self.cycle_keyboard_layout(),
         }
     }
 
@@ -454,6 +455,37 @@ impl WMState {
             self.request_manage_dirty();
         }
     }
+
+    fn cycle_keyboard_layout(&mut self) {
+        let Some(ref config) = self.config else {
+            return;
+        };
+        let Some(ref layout_cfg) = config.keyboard_layout else {
+            return;
+        };
+        let count = count_keyboard_layouts(&layout_cfg.layout);
+        if count <= 1 {
+            return;
+        }
+
+        for kb in self.xkb_keyboards.values_mut() {
+            let target = next_keyboard_layout(kb.current_layout, count).unwrap();
+            kb.current_layout = target;
+            kb.proxy.set_layout_by_index(target as i32);
+        }
+    }
+}
+
+pub(super) fn count_keyboard_layouts(layout_str: &str) -> u32 {
+    layout_str.split(',').filter(|s| !s.is_empty()).count() as u32
+}
+
+pub(super) fn next_keyboard_layout(current: u32, count: u32) -> Option<u32> {
+    if count <= 1 {
+        None
+    } else {
+        Some((current + 1) % count)
+    }
 }
 
 #[cfg(test)]
@@ -670,6 +702,28 @@ mod tests {
 
         state.cancel_pending_split();
         assert_eq!(state.pending_split, None);
+    }
+
+    #[test]
+    fn count_keyboard_layouts_filters_empty() {
+        assert_eq!(count_keyboard_layouts("us,,de"), 2);
+        assert_eq!(count_keyboard_layouts(","), 0);
+        assert_eq!(count_keyboard_layouts(""), 0);
+        assert_eq!(count_keyboard_layouts("us,de,fr"), 3);
+        assert_eq!(count_keyboard_layouts("us"), 1);
+    }
+
+    #[test]
+    fn next_keyboard_layout_wraps() {
+        assert_eq!(next_keyboard_layout(2, 3), Some(0));
+        assert_eq!(next_keyboard_layout(0, 2), Some(1));
+        assert_eq!(next_keyboard_layout(1, 2), Some(0));
+    }
+
+    #[test]
+    fn next_keyboard_layout_none_when_single_or_zero() {
+        assert_eq!(next_keyboard_layout(0, 1), None);
+        assert_eq!(next_keyboard_layout(0, 0), None);
     }
 
     #[test]

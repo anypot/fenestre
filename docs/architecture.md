@@ -13,12 +13,17 @@ the larger refactor roadmap lives in `refactor-plan.md`.
   keybindings, focus, config, layout, and pending request queues.
 - Defined in `src/state/wm.rs`. Scene snapshot types and the manage/render
   reconciler live in `src/state/scene.rs`. Output reassignment (hotplug/remove)
-  logic lives in `src/state/reassign.rs`, and focus management (focus stack,
+  logic lives in `src/state/reassign.rs`, focus management (focus stack,
   global focus pointers, close-window reconciliation) lives in
-  `src/state/focus.rs` — both as extension impls on `WMState`.
+  `src/state/focus.rs`, and input device bookkeeping lives in `src/state/input.rs` —
+  all as extension impls on `WMState`.
 - Public crate surface is intentionally tiny: re-exported from `src/state/mod.rs`.
 - Most fields are `pub(super)` to keep the `state` module boundary strict.
-- Maintains three `HashMap` proxy indexes (`windows_by_proxy`, `outputs_by_proxy`, `seats_by_proxy`) for O(1) lookup of Wayland objects, plus a per-output window grouping index `windows_by_output` (`HashMap<OutputId, HashSet<WindowId>>`) for O(1) lookup of which windows belong to an output.
+- Maintains four `HashMap` proxy indexes (`windows_by_proxy`, `outputs_by_proxy`,
+  `seats_by_proxy`, plus input-device indexes in `input.rs`) for O(1) lookup of
+  Wayland objects, plus a per-output window grouping index `windows_by_output`
+  (`HashMap<OutputId, HashSet<WindowId>>`) for O(1) lookup of which windows belong
+  to an output.
 
 ### Architecture (hexagonal)
 
@@ -31,7 +36,9 @@ rationale and sequencing:
   the domain `Event` enum (`src/state/events.rs`). It performs no protocol I/O.
 - **Adapter (IO):** `src/state/adapter.rs` is the **only** `state/` module that
   imports `protocol::` and issues River calls. It applies deferred `Effect`s and
-  owns proxy bookkeeping for windows/outputs/seats.
+  owns proxy bookkeeping for windows/outputs/seats/input devices, plus device
+  config application (`apply_input_config`, `apply_keyboard_layout`,
+  `apply_repeat_config`).
 - **Runtime:** `main.rs` owns the `calloop` loop and wires adapter ↔ core.
 
 The domain boundary types are:
@@ -73,8 +80,9 @@ between renders are still caught.
 ### River Protocol Flow
 
 1. `main.rs` connects to Wayland and gets the registry.
-2. `handlers.rs` binds the `river_window_manager_v1`, `river_xkb_bindings_v1`, and
-   `river_layer_shell_v1` globals,
+2. `handlers.rs` binds the `river_window_manager_v1`, `river_xkb_bindings_v1`,
+   `river_layer_shell_v1`, `river_input_manager_v1`, `river_libinput_config_v1`,
+   and `river_xkb_config_v1` globals,
    translating each River event into a domain `Event` and calling `state.handle_event(event)`.
 3. River emits `ManageStart` / `RenderStart` sequences.
 4. During `ManageStart`:
@@ -199,7 +207,31 @@ flowchart TD
   (`WindowRules`); evaluation is triggered by `Event::AppIdUpdated` / `Event::TitleUpdated` via
   `WMState::evaluate_window_rules` (handlers.rs translates the River events into
   those `Event`s), and re-run for an output's windows when its geometry becomes
-  known (to catch up windows deferred for a missing output rect).
+   known (to catch up windows deferred for a missing output rect).
+
+### Input Device Model
+
+- Three new River protocols handle input device lifecycle and configuration:
+  - `river_input_manager_v1` — discovers input devices (`RiverInputDeviceV1`),
+    emits `input_device` and `removed` events.
+  - `river_libinput_config_v1` — exposes per-device libinput settings
+    (`RiverLibinputDeviceV1`), emitted as children of the config global.
+  - `river_xkb_config_v1` — exposes per-device xkbcommon keyboard configuration
+    (`RiverXkbKeyboardV1`, `RiverXkbKeymapV1`), emitted as children of the config global.
+- State bookkeeping lives in `src/state/input.rs`:
+  - `DeviceId` — internal allocator for input devices.
+  - `InputDeviceState` — parent `RiverInputDeviceV1` proxy plus name/type.
+  - `LibinputDeviceState` — `RiverLibinputDeviceV1` proxy.
+  - `XkbKeyboardState` — `RiverXkbKeyboardV1` proxy.
+- Indexing: four `HashMap` pairs (`input_devices`, `input_devices_by_proxy`,
+  `input_devices_by_name`, `libinput_devices`, `libinput_devices_by_proxy`,
+  `xkb_keyboards`, `xkb_keyboards_by_proxy`) give O(1) lookup by ID, proxy, or name.
+- Config application is centralized in `adapter.rs`:
+  - `apply_device_config` → `apply_input_config` + `apply_keyboard_layout` + `apply_repeat_config`.
+  - Called on device `Done` events and on config load/reload.
+- Lifecycle: `Removed` events clean up all indexes and destroy the Wayland proxy.
+  Child proxies (`RiverLibinputDeviceV1`, `RiverXkbKeyboardV1`) are destroyed
+  explicitly to avoid leaking Wayland objects.
 
 ### Configuration
 
@@ -227,7 +259,11 @@ flowchart TD
 - `Config::border_rgba()` precomputes RGBA color components from ARGB border colors for efficient border rendering.
 - Layout and border fields use `Option` types: `None` means unset (inherit default), `Some(v)` means explicit.
   - `LayoutConfig`: `gap`, `margin_top/right/bottom/left`
-  - `Config`: `border_width`, `border_color_focused`, `border_color_unfocused`, `resize_delta_ratio`, `resize_delta_percent`
+  - `Config`: `border_width`, `border_color_focused`, `border_color_unfocused`, `resize_delta_ratio`, `resize_delta_percent`, `keyboard_layout`, `input_devices`
+- `input_devices` is matched by exact device name; `keyboard_layout` is replaced on merge (not identity-merged).
+- `CycleKeyboardLayout` (the `cycle_keyboard_layout` command) iterates through comma-separated XKB layouts using modular arithmetic. Layout count is determined from `keyboard_layout.layout` in the config (`split(',').count()`), so no probing is needed — wrapping always works in one press.
+- Repeat rate/delay are per-device fields on `InputDeviceConfig`, applied only to matching keyboard devices; omitted entries keep the compositor default.
+- Device settings are pushed to already-enumerated devices on config load and reload via `apply_device_config`.
 - Border colors update independently of `border_width` during merge.
 - Per-window `decoration_hint` (from River protocol) overrides global `decorations`:
   - `0` = server-side decorations (compositor borders)

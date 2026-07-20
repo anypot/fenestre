@@ -246,6 +246,12 @@ pub fn defaults() -> Config {
             ),
             binding(
                 KeyBindingTarget::Primary,
+                KEY_space,
+                SUPER | SHIFT,
+                Command::CycleKeyboardLayout,
+            ),
+            binding(
+                KeyBindingTarget::Primary,
                 KEY_h,
                 SUPER | CTRL,
                 Command::FocusOutputLeft,
@@ -287,5 +293,7 @@ pub fn defaults() -> Config {
             },
         ],
         rules: Vec::new(),
+        keyboard_layout: None,
+        input_devices: Vec::new(),
     }
 }

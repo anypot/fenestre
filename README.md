@@ -51,7 +51,10 @@ Fenestre runs as a River window manager client. It requires a River that support
 
 - `river_window_management_v1`
 - `river_xkb_bindings_v1`
-- `river_layer_shell_v1` (used for layer-shell exclusive zones and keyboard focus)
+- `river_layer_shell_v1`
+- `river_input_management_v1`
+- `river_libinput_config_v1`
+- `river_xkb_config_v1`
 
 ## Configuration
 
@@ -103,6 +106,48 @@ Each rule has:
 
 All matching rules apply, later wins. Rules are evaluated once per window as its `app_id`/`title` arrive; reloading config does not re-apply them to existing windows. Fenestre ships no default rules.
 
+### Input devices
+
+Device settings are matched by exact device name. Declared as an `[[input_devices]]` array in TOML or an `input_devices` table in Lua:
+
+```toml
+[[input_devices]]
+name = "example-mouse"
+accel_profile = "flat"
+accel_speed = 0.0
+scroll_factor = 1.0
+
+[[input_devices]]
+name = "example-keyboard"
+repeat_rate = 50
+repeat_delay = 300
+
+[[input_devices]]
+name = "example-touchpad"
+tap = true
+tap_button_map = "left-middle-right"
+natural_scroll = true
+```
+
+Supported fields: `accel_profile` (`flat` / `adaptive` / `none` / `custom`), `accel_speed`, `scroll_factor` (multiplier applied to scroll events), `repeat_rate` (keys per second; 0 disables repeat), `repeat_delay` (milliseconds), `tap`, `tap_button_map` (`left-right-middle` / `left-middle-right`), `natural_scroll`, `left_handed`, `scroll_method` (`two-finger` / `edge` / `on-button-down` / `none`), `middle_emulation`, `dwt` (disable-while-typing), `send_events` (`enabled` / `disabled` / `disabled-on-external-mouse`), `drag`, `drag_lock` (`disabled` / `enabled-timeout` / `enabled-sticky`), `click_method` (`none` / `button-areas` / `clickfinger`), `rotation`.
+
+Device names are matched **exactly** (no patterns). Omitted fields are left at the compositor default.
+
+> To find the correct device name: use `cat /proc/bus/input/devices` and look for the `NAME` property.
+
+### Keyboard layout
+
+```toml
+[keyboard_layout]
+layout = "us,de"
+variant = "intl,"
+rules = "evdev"
+model = "pc105"
+options = "caps:swapescape"
+```
+
+Dynamic switching between multiple comma-separated layouts is supported via the `cycle_keyboard_layout` command (bound to `Shift+Super+Space` by default), which wraps to the first layout after the last.
+
 ## Default keybindings
 
 - `Super+Return`: spawn `foot`
@@ -135,12 +180,14 @@ All matching rules apply, later wins. Rules are evaluated once per window as its
 - `Super+v`: toggle pending split (vertical axis)
 - `Super+Shift+v`: toggle pending split (horizontal axis)
 - `Super+Escape`: cancel pending split
+- `Shift+Super+Space`: cycle to the next keyboard layout
 - `Super+Ctrl+h`: focus output to the left
 - `Super+Ctrl+j`: focus output below
 - `Super+Ctrl+k`: focus output above
 - `Super+Ctrl+l`: focus output to the right
+
 ## Status
 
-Working: River integration, Lua + TOML config loading (TOML preferred), per-output BSP layout with hotplug reassignment, compositor-side borders, window rules, keyboard-driven focus/move/resize, and pointer-driven move/resize (interactive move/resize of windows via the compositor's `op_start_pointer` flow).
+Working: River integration, Lua + TOML config loading (TOML preferred), per-output BSP layout with hotplug reassignment, compositor-side borders, window rules, keyboard-driven focus/move/resize, pointer-driven move/resize (interactive move/resize of windows via the compositor's `op_start_pointer` flow), input device configuration (libinput settings, keyboard layout, repeat rate/delay), and config reload that re-applies device settings.
 
 Not yet implemented: IPC and a layout rotate command.
