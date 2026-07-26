@@ -18,6 +18,12 @@ It uses a binary space partitioning (BSP) tree as the core tiling layout model.
 cargo build
 ```
 
+Lint:
+
+```sh
+cargo clippy --all-targets -- -D warnings
+```
+
 Run with debug logging:
 
 ```sh
@@ -59,7 +65,7 @@ fenestre/
     config/                - Config, KeyBindingConfig, KeyBindingTarget, ConfigError, loaders (lua/toml), schema, parser, rule_types (RulePattern/WindowRule data types)
     layout/                - BSP tree (LayoutTree, LayoutNode, Rect, split/focus/arrange, resize logic)
     protocol/              - wayland-scanner generated River protocol bindings
-    state/                 - WMState, Event/Effect domains, adapter, handlers, commands, config, keybindings, window/output/seat proxies, rule, reassign, focus (focus stack / close reconciliation)
+    state/                 - WMState, Event/Effect domains, adapter, handlers, commands, config, keybindings, window/output/seat/input proxies, rule, reassign, focus (focus stack / close reconciliation)
   examples/
     fenestre.toml          - Full TOML config example (canonical, validated by tests)
     fenestre.lua           - Full Lua config example (validated by tests)
@@ -79,6 +85,9 @@ Architecture decision records live in [`docs/adr/`](docs/adr/README.md).
   create or edit — including newly added files. Do not hand-format and assume
   it matches `rustfmt`; the saved code must already be `cargo fmt` clean.
   The repo relies on Cargo's default `rustfmt` (no `rustfmt.toml` present).
+- **Clippy is mandatory and must pass before finishing any change.** Always
+  run `cargo clippy --all-targets -- -D warnings` and resolve every warning
+  before completing work.
 - Visibility: Prefer the most restrictive visibility that works.
   - `pub(crate)` for crate-internal types.
   - `pub(super)` for state-internal fields accessed across `state/` submodules.
@@ -105,7 +114,7 @@ keybindings, update the docs to match before finishing:
   `docs/adr/` for accepted architecture decisions (index in `docs/adr/README.md`); `docs/refactor-plan.md` is the
   roadmap and must stay untouched unless the user asks.
 
-Run `cargo fmt` after editing any Rust file. `AGENTS.md` should stay short and
+Run `cargo fmt` and `cargo clippy --all-targets -- -D warnings` after editing any Rust file. `AGENTS.md` should stay short and
 scannable — move detailed explanations into `docs/`, not into this file.
 
 ## Work in Progress / Gotchas
@@ -135,7 +144,9 @@ scannable — move detailed explanations into `docs/`, not into this file.
 4. **Pending queues**: Window closes, xkb binding destroys, and focus changes use
    pending queues applied during the appropriate sequence to avoid mid-event mutation.
 5. **Config reconciliation**: When seats/outputs appear late, `reconcile_keybindings`
-   is called so bindings are created for the current seat set.
+   is called so bindings are created for the current seat set. When devices
+   enumerate or config reloads, `apply_device_config` pushes input device,
+   keyboard layout, and repeat settings to matching devices.
 6. **Scene snapshot discipline**: `apply_manage` and `apply_render` each keep their
    **own** snapshot (`last_manage_scene` / `last_render_scene`) and diff the fresh
    `desired_scene()` against it. Never collapse the two snapshots into one, and each
@@ -158,5 +169,8 @@ with a River compositor that supports:
 - `river_window_management_v1` (version 5)
 - `river_xkb_bindings_v1` (version 3)
 - `river_layer_shell_v1` (layer-shell exclusive zones and keyboard focus)
+- `river_input_management_v1` (input device discovery and repeat)
+- `river_libinput_config_v1` (per-device libinput settings)
+- `river_xkb_config_v1` (keyboard layout via xkbcommon keymap)
 
 Building requires Rust 1.88+ (edition 2024) and Wayland development libraries.

@@ -9,6 +9,7 @@ use super::seat::SeatId;
 use super::wm::WMState;
 use crate::config::{Config, KeyBindingTarget, Result};
 use log::{debug, error, warn};
+use wayland_client::QueueHandle;
 
 impl WMState {
     /// Load a config file from disk and apply it to this state.
@@ -43,7 +44,7 @@ impl WMState {
     }
 
     /// Reload the active configuration file, if one was loaded.
-    pub(super) fn reload_config(&mut self) {
+    pub(super) fn reload_config(&mut self, qh: &QueueHandle<Self>) {
         let Some(path) = self.config_path.as_deref() else {
             warn!(
                 target: "fenestre::state::config",
@@ -60,6 +61,7 @@ impl WMState {
                     path.display()
                 );
                 self.load_config(config);
+                self.apply_device_config(qh);
             }
             Err(err) => {
                 error!(

@@ -231,6 +231,7 @@ fn parse_command(tokens: &[&str]) -> Option<Command> {
         "focus_output_right" => Some(Command::FocusOutputRight),
         "focus_output_up" => Some(Command::FocusOutputUp),
         "focus_output_down" => Some(Command::FocusOutputDown),
+        "cycle_keyboard_layout" => Some(Command::CycleKeyboardLayout),
         _ => None,
     }
 }

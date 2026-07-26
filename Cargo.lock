@@ -235,6 +235,7 @@ dependencies = [
  "calloop",
  "calloop-wayland-source",
  "env_logger",
+ "libc",
  "log",
  "mlua",
  "regex",

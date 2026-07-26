@@ -565,6 +565,8 @@ mod tests {
             resize_delta_ratio: None,
             resize_delta_percent: None,
             rules: Vec::new(),
+            keyboard_layout: None,
+            input_devices: Vec::new(),
         });
 
         let scene = state.desired_scene();
@@ -602,6 +604,8 @@ mod tests {
             resize_delta_ratio: None,
             resize_delta_percent: None,
             rules: Vec::new(),
+            keyboard_layout: None,
+            input_devices: Vec::new(),
         });
 
         let scene = state.desired_scene();

@@ -103,6 +103,107 @@ pub struct RawPointerBinding {
     pub op: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RawAccelProfile {
+    None,
+    Flat,
+    Adaptive,
+    // `Custom` is intentionally excluded: River's custom accel profile requires
+    // additional `set_points` calls (acceleration curve points) that aren't
+    // exposed via the config interface yet.
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RawTapButtonMap {
+    LeftRightMiddle,
+    LeftMiddleRight,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RawScrollMethod {
+    None,
+    TwoFinger,
+    Edge,
+    OnButtonDown,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RawDragLockState {
+    Disabled,
+    EnabledTimeout,
+    EnabledSticky,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RawClickMethod {
+    None,
+    ButtonAreas,
+    Clickfinger,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RawSendEventsMode {
+    Enabled,
+    Disabled,
+    DisabledOnExternalMouse,
+}
+
+/// Intermediate representation of keyboard layout configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RawKeyboardLayout {
+    pub rules: Option<String>,
+    pub model: Option<String>,
+    pub layout: String,
+    pub variant: Option<String>,
+    pub options: Option<String>,
+}
+
+/// Intermediate representation of an input device configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RawInputDevice {
+    pub name: String,
+    #[serde(default)]
+    pub accel_profile: Option<RawAccelProfile>,
+    #[serde(default)]
+    pub accel_speed: Option<f64>,
+    #[serde(default)]
+    pub scroll_factor: Option<f64>,
+    #[serde(default)]
+    pub repeat_rate: Option<i32>,
+    #[serde(default)]
+    pub repeat_delay: Option<i32>,
+    #[serde(default)]
+    pub tap: Option<bool>,
+    #[serde(default)]
+    pub tap_button_map: Option<RawTapButtonMap>,
+    #[serde(default)]
+    pub natural_scroll: Option<bool>,
+    #[serde(default)]
+    pub left_handed: Option<bool>,
+    #[serde(default)]
+    pub scroll_method: Option<RawScrollMethod>,
+    #[serde(default)]
+    pub middle_emulation: Option<bool>,
+    #[serde(default)]
+    pub dwt: Option<bool>,
+    #[serde(default)]
+    pub send_events: Option<RawSendEventsMode>,
+    #[serde(default)]
+    pub drag: Option<bool>,
+    #[serde(default)]
+    pub drag_lock: Option<RawDragLockState>,
+    #[serde(default)]
+    pub click_method: Option<RawClickMethod>,
+    #[serde(default)]
+    pub rotation: Option<u32>,
+}
+
 /// Intermediate representation of keybinding modifiers: either a single string
 /// or an array of strings.
 #[derive(Debug, Clone, Deserialize)]
@@ -135,6 +236,10 @@ pub struct RawConfig {
     pub resize_delta_percent: Option<f32>,
     #[serde(default)]
     pub rules: Option<Vec<RawRule>>,
+    #[serde(default)]
+    pub keyboard_layout: Option<RawKeyboardLayout>,
+    #[serde(default)]
+    pub input_devices: Option<Vec<RawInputDevice>>,
 }
 
 /// Generate a `deserialize_with` helper that wraps serde's generic error with
@@ -203,6 +308,21 @@ pub fn build_config(raw: RawConfig) -> Result<Config> {
         .map(build_raw_rule)
         .collect::<Result<Vec<_>>>()?;
 
+    let keyboard_layout = raw.keyboard_layout.map(|raw| KeyboardLayoutConfig {
+        rules: raw.rules,
+        model: raw.model,
+        layout: raw.layout,
+        variant: raw.variant,
+        options: raw.options,
+    });
+
+    let input_devices = raw
+        .input_devices
+        .unwrap_or_default()
+        .into_iter()
+        .map(build_raw_input_device)
+        .collect::<Result<Vec<_>>>()?;
+
     Ok(Config {
         layout,
         decorations,
@@ -219,6 +339,8 @@ pub fn build_config(raw: RawConfig) -> Result<Config> {
             .map(build_raw_pointer_binding)
             .collect::<Result<Vec<_>>>()?,
         rules,
+        keyboard_layout,
+        input_devices,
     })
 }
 
@@ -299,6 +421,121 @@ fn build_raw_rule(raw: RawRule) -> Result<WindowRule> {
     });
 
     parser::build_rule(app_id, title, &raw.mode, floating_rect)
+}
+
+impl From<RawAccelProfile> for AccelProfile {
+    fn from(raw: RawAccelProfile) -> Self {
+        match raw {
+            RawAccelProfile::None => AccelProfile::None,
+            RawAccelProfile::Flat => AccelProfile::Flat,
+            RawAccelProfile::Adaptive => AccelProfile::Adaptive,
+        }
+    }
+}
+
+impl From<RawTapButtonMap> for TapButtonMap {
+    fn from(raw: RawTapButtonMap) -> Self {
+        match raw {
+            RawTapButtonMap::LeftRightMiddle => TapButtonMap::Lrm,
+            RawTapButtonMap::LeftMiddleRight => TapButtonMap::Lmr,
+        }
+    }
+}
+
+impl From<RawScrollMethod> for ScrollMethod {
+    fn from(raw: RawScrollMethod) -> Self {
+        match raw {
+            RawScrollMethod::None => ScrollMethod::None,
+            RawScrollMethod::TwoFinger => ScrollMethod::TwoFinger,
+            RawScrollMethod::Edge => ScrollMethod::Edge,
+            RawScrollMethod::OnButtonDown => ScrollMethod::OnButtonDown,
+        }
+    }
+}
+
+impl From<RawDragLockState> for DragLockState {
+    fn from(raw: RawDragLockState) -> Self {
+        match raw {
+            RawDragLockState::Disabled => DragLockState::Disabled,
+            RawDragLockState::EnabledTimeout => DragLockState::EnabledTimeout,
+            RawDragLockState::EnabledSticky => DragLockState::EnabledSticky,
+        }
+    }
+}
+
+impl From<RawClickMethod> for ClickMethod {
+    fn from(raw: RawClickMethod) -> Self {
+        match raw {
+            RawClickMethod::None => ClickMethod::None,
+            RawClickMethod::ButtonAreas => ClickMethod::ButtonAreas,
+            RawClickMethod::Clickfinger => ClickMethod::Clickfinger,
+        }
+    }
+}
+
+impl From<RawSendEventsMode> for SendEventsMode {
+    fn from(raw: RawSendEventsMode) -> Self {
+        match raw {
+            RawSendEventsMode::Enabled => SendEventsMode::Enabled,
+            RawSendEventsMode::Disabled => SendEventsMode::Disabled,
+            RawSendEventsMode::DisabledOnExternalMouse => SendEventsMode::DisabledOnExternalMouse,
+        }
+    }
+}
+
+fn build_raw_input_device(raw: RawInputDevice) -> Result<InputDeviceConfig> {
+    if let Some(factor) = raw.scroll_factor
+        && factor < 0.0
+    {
+        return Err(ConfigError::InvalidConfig(format!(
+            "input_devices[{}].scroll_factor must be >= 0",
+            raw.name
+        )));
+    }
+    if let Some(rate) = raw.repeat_rate
+        && rate < 0
+    {
+        return Err(ConfigError::InvalidConfig(format!(
+            "input_devices[{}].repeat_rate must be >= 0",
+            raw.name
+        )));
+    }
+    if let Some(delay) = raw.repeat_delay
+        && delay < 0
+    {
+        return Err(ConfigError::InvalidConfig(format!(
+            "input_devices[{}].repeat_delay must be >= 0",
+            raw.name
+        )));
+    }
+    if let Some(rotation) = raw.rotation
+        && rotation >= 360
+    {
+        return Err(ConfigError::InvalidConfig(format!(
+            "input_devices[{}].rotation must be in range [0, 360)",
+            raw.name
+        )));
+    }
+    Ok(InputDeviceConfig {
+        name: raw.name,
+        accel_profile: raw.accel_profile.map(AccelProfile::from),
+        accel_speed: raw.accel_speed,
+        scroll_factor: raw.scroll_factor,
+        repeat_rate: raw.repeat_rate,
+        repeat_delay: raw.repeat_delay,
+        tap: raw.tap,
+        tap_button_map: raw.tap_button_map.map(TapButtonMap::from),
+        natural_scroll: raw.natural_scroll,
+        left_handed: raw.left_handed,
+        scroll_method: raw.scroll_method.map(ScrollMethod::from),
+        middle_emulation: raw.middle_emulation,
+        dwt: raw.dwt,
+        send_events: raw.send_events.map(SendEventsMode::from),
+        drag: raw.drag,
+        drag_lock: raw.drag_lock.map(DragLockState::from),
+        click_method: raw.click_method.map(ClickMethod::from),
+        rotation: raw.rotation,
+    })
 }
 
 /// Convert an `mlua::Value` into a `serde_json::Value` so Lua tables can be
@@ -431,6 +668,8 @@ mod tests {
             }]),
             pointer_bindings: None,
             rules: None,
+            keyboard_layout: None,
+            input_devices: None,
         };
 
         let config = build_config(raw).expect("raw config should build");
@@ -464,6 +703,8 @@ mod tests {
             keybindings: None,
             pointer_bindings: None,
             rules: None,
+            keyboard_layout: None,
+            input_devices: None,
         };
 
         let error = build_config(raw).expect_err("invalid ratio should fail");
@@ -568,5 +809,98 @@ mod tests {
             mlua_value_to_json_value(mlua::Value::Table(table)).expect_err("cycle should fail");
 
         assert!(matches!(error, ConfigError::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn raw_accel_profile_converts_to_all_variants() {
+        assert_eq!(
+            AccelProfile::from(RawAccelProfile::None),
+            AccelProfile::None
+        );
+        assert_eq!(
+            AccelProfile::from(RawAccelProfile::Flat),
+            AccelProfile::Flat
+        );
+        assert_eq!(
+            AccelProfile::from(RawAccelProfile::Adaptive),
+            AccelProfile::Adaptive
+        );
+    }
+
+    #[test]
+    fn raw_tap_button_map_converts_to_all_variants() {
+        assert_eq!(
+            TapButtonMap::from(RawTapButtonMap::LeftRightMiddle),
+            TapButtonMap::Lrm
+        );
+        assert_eq!(
+            TapButtonMap::from(RawTapButtonMap::LeftMiddleRight),
+            TapButtonMap::Lmr
+        );
+    }
+
+    #[test]
+    fn raw_scroll_method_converts_to_all_variants() {
+        assert_eq!(
+            ScrollMethod::from(RawScrollMethod::None),
+            ScrollMethod::None
+        );
+        assert_eq!(
+            ScrollMethod::from(RawScrollMethod::TwoFinger),
+            ScrollMethod::TwoFinger
+        );
+        assert_eq!(
+            ScrollMethod::from(RawScrollMethod::Edge),
+            ScrollMethod::Edge
+        );
+        assert_eq!(
+            ScrollMethod::from(RawScrollMethod::OnButtonDown),
+            ScrollMethod::OnButtonDown
+        );
+    }
+
+    #[test]
+    fn raw_drag_lock_state_converts_to_all_variants() {
+        assert_eq!(
+            DragLockState::from(RawDragLockState::Disabled),
+            DragLockState::Disabled
+        );
+        assert_eq!(
+            DragLockState::from(RawDragLockState::EnabledTimeout),
+            DragLockState::EnabledTimeout
+        );
+        assert_eq!(
+            DragLockState::from(RawDragLockState::EnabledSticky),
+            DragLockState::EnabledSticky
+        );
+    }
+
+    #[test]
+    fn raw_click_method_converts_to_all_variants() {
+        assert_eq!(ClickMethod::from(RawClickMethod::None), ClickMethod::None);
+        assert_eq!(
+            ClickMethod::from(RawClickMethod::ButtonAreas),
+            ClickMethod::ButtonAreas
+        );
+        assert_eq!(
+            ClickMethod::from(RawClickMethod::Clickfinger),
+            ClickMethod::Clickfinger
+        );
+    }
+
+    #[test]
+    fn raw_send_events_mode_converts_to_all_variants() {
+        assert_eq!(
+            SendEventsMode::from(RawSendEventsMode::Enabled),
+            SendEventsMode::Enabled
+        );
+        assert_eq!(
+            SendEventsMode::from(RawSendEventsMode::Disabled),
+            SendEventsMode::Disabled
+        );
+        assert_eq!(
+            SendEventsMode::from(RawSendEventsMode::DisabledOnExternalMouse),
+            SendEventsMode::DisabledOnExternalMouse
+        );
     }
 }

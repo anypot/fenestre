@@ -162,6 +162,11 @@ return {
 			modifiers = { "super" },
 			command = "cancel_pending_split",
 		},
+		{
+			keysym = "Space",
+			modifiers = { "super", "shift" },
+			command = "cycle_keyboard_layout",
+		},
 	},
 
 	rules = {
@@ -182,6 +187,34 @@ return {
 			app_id = "steam",
 			mode = "floating",
 			floating_rect = { width = 1280, height = 1080 },
+		},
+	},
+
+	keyboard_layout = {
+		layout = "us,de",
+		variant = "intl,",
+		rules = "evdev",
+		model = "pc105",
+		options = "caps:swapescape",
+	},
+
+	input_devices = {
+		{
+			name = "example-mouse",
+			accel_profile = "flat",
+			accel_speed = 0.0,
+			scroll_factor = 1.0,
+		},
+		{
+			name = "example-keyboard",
+			repeat_rate = 50,
+			repeat_delay = 300,
+		},
+		{
+			name = "example-touchpad",
+			tap = true,
+			tap_button_map = "left-middle-right",
+			natural_scroll = true,
 		},
 	},
 }
