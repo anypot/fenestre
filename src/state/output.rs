@@ -8,7 +8,7 @@ use crate::protocol::river::river_window_management_v1::client::river_output_v1:
 pub(crate) struct OutputId(pub u32);
 
 /// Runtime state for a River output.
-pub(super) struct Output {
+pub(crate) struct Output {
     /// River output protocol proxy.
     pub(super) river_output: Option<RiverOutputV1>,
 
@@ -19,10 +19,10 @@ pub(super) struct Output {
     pub(super) wl_output_name: u32,
 
     /// Logical output position.
-    pub(super) position: Option<(i32, i32)>,
+    pub(crate) position: Option<(i32, i32)>,
 
     /// Logical output dimensions.
-    pub(super) dimensions: Option<super::window::Dimensions>,
+    pub(crate) dimensions: Option<super::window::Dimensions>,
 
     /// Usable tiling area after subtracting layer-shell exclusive zones
     /// (panels/bars), in global coordinates. `None` until River reports it via
@@ -32,7 +32,7 @@ pub(super) struct Output {
 
 impl Output {
     /// Create a new output record.
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             river_output: None,
             river_layer_shell_output: None,
@@ -67,12 +67,12 @@ impl Output {
     /// Fullscreen windows are unaffected: they are driven by
     /// `river_window_v1.fullscreen` against the output proxy, not by the tree's
     /// output rect, so they still cover the whole physical output.
-    pub(super) fn tiling_rect(&self) -> Option<Rect> {
+    pub(crate) fn tiling_rect(&self) -> Option<Rect> {
         self.non_exclusive_area.or_else(|| self.rect())
     }
 
     /// Return this output's rectangle, or `None` if dimensions are not yet known.
-    pub(super) fn rect(&self) -> Option<Rect> {
+    pub(crate) fn rect(&self) -> Option<Rect> {
         let (x, y) = self.position.unwrap_or((0, 0));
         self.dimensions
             .as_ref()

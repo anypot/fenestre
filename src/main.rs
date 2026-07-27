@@ -1,5 +1,6 @@
 mod command;
 mod config;
+mod ipc;
 mod layout;
 mod protocol;
 mod state;
@@ -68,6 +69,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("Failed to insert Wayland source into event loop");
 
     let _registry = display.get_registry(&qh, ());
+
+    let inner_handle = event_loop.handle();
+    let closure_handle = inner_handle.clone();
+    let listener =
+        ipc::server::bind_listener().map_err(|e| format!("Failed to bind IPC socket: {e}"))?;
+    inner_handle
+        .insert_source(
+            calloop::generic::Generic::new(listener, calloop::Interest::READ, calloop::Mode::Level),
+            move |_readiness, meta, _state: &mut WMState| {
+                let listener = unsafe { meta.get_mut() };
+                loop {
+                    match listener.accept() {
+                        Ok((stream, _addr)) => {
+                            let conn = match ipc::server::IpcConn::new(stream) {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    log::warn!(target: "fenestre::ipc", "failed to wrap client: {e}");
+                                    continue;
+                                }
+                            };
+                            if let Err(e) = closure_handle.insert_source(
+                                calloop::generic::Generic::new(
+                                    conn,
+                                    calloop::Interest::READ,
+                                    calloop::Mode::Level,
+                                ),
+                                |_readiness, meta, state: &mut WMState| {
+                                    let conn = unsafe { meta.get_mut() };
+                                    ipc::server::handle_client(conn, state)
+                                },
+                            ) {
+                                log::warn!(target: "fenestre::ipc", "failed to register client: {e}");
+                            }
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(e) => {
+                            log::warn!(target: "fenestre::ipc", "accept error: {e}");
+                            break;
+                        }
+                    }
+                }
+                Ok(calloop::PostAction::Continue)
+            },
+        )
+        .map_err(|e| format!("Failed to insert IPC source into event loop: {e}"))?;
 
     loop {
         event_loop

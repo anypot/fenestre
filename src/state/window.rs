@@ -7,16 +7,16 @@ use super::output::OutputId;
 
 /// Stable identifier for a window owned by `WMState`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) struct WindowId(pub u32);
+pub(crate) struct WindowId(pub u32);
 
 /// Window dimensions.
 #[derive(Default)]
-pub(super) struct Dimensions {
+pub(crate) struct Dimensions {
     /// Width in logical pixels.
-    pub(super) width: i32,
+    pub(crate) width: i32,
 
     /// Height in logical pixels.
-    pub(super) height: i32,
+    pub(crate) height: i32,
 }
 
 /// River-provided size constraints.
@@ -36,7 +36,7 @@ pub(super) struct DimensionsHint {
 }
 
 /// Runtime state for a River window.
-pub(super) struct Window {
+pub(crate) struct Window {
     /// Internal window identifier.
     pub(super) id: WindowId,
 
@@ -50,16 +50,16 @@ pub(super) struct Window {
     pub(super) parent: Option<WindowId>,
 
     /// Application ID reported by River.
-    pub(super) app_id: Option<String>,
+    pub(crate) app_id: Option<String>,
 
     /// Window title reported by River.
-    pub(super) title: Option<String>,
+    pub(crate) title: Option<String>,
 
     /// Whether window rules have been applied to this window.
     pub(super) rules_applied: bool,
 
     /// Process ID reported by River.
-    pub(super) pid: i32,
+    pub(crate) pid: i32,
 
     /// Render-list node for this window.
     pub(super) node: Option<RiverNodeV1>,
@@ -86,7 +86,7 @@ const MIN_FLOAT_SIZE: i32 = 320;
 
 impl Window {
     /// Create a new window record.
-    pub(super) fn new(id: WindowId, output_id: OutputId) -> Self {
+    pub(crate) fn new(id: WindowId, output_id: OutputId) -> Self {
         Self {
             id,
             output_id,

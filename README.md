@@ -16,6 +16,7 @@ Build from source:
 
 ```sh
 cargo build --release
+cargo build --release --bin fnsctl
 ```
 
 Or install directly from the git repository (still requires the system libraries above). Pin to a release tag to avoid pulling unreleased commits:
@@ -34,6 +35,17 @@ Run with a config file:
 
 ```sh
 RUST_LOG=fenestre=debug cargo run -- examples/fenestre.toml
+```
+
+### IPC client
+
+`fnsctl` is a CLI client that queries the running Fenestre instance over a Unix socket. Output is JSON:
+
+```sh
+cargo run --bin fnsctl -- windows    # list windows
+cargo run --bin fnsctl -- outputs    # list outputs
+cargo run --bin fnsctl -- focused    # focused window / output
+cargo run --bin fnsctl -- all        # all of the above
 ```
 
 Reference configs live in `examples/`:
@@ -190,4 +202,4 @@ Dynamic switching between multiple comma-separated layouts is supported via the 
 
 Working: River integration, Lua + TOML config loading (TOML preferred), per-output BSP layout with hotplug reassignment, compositor-side borders, window rules, keyboard-driven focus/move/resize, pointer-driven move/resize (interactive move/resize of windows via the compositor's `op_start_pointer` flow), input device configuration (libinput settings, keyboard layout, repeat rate/delay), and config reload that re-applies device settings.
 
-Not yet implemented: IPC and a layout rotate command.
+Not yet implemented: a layout rotate command.
