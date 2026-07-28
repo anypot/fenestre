@@ -2,8 +2,7 @@
 
 This document holds the code encyclopedia for Fenestre: the conceptual model,
 protocol flow, layout engine, focus model, and the invariants that the
-implementation must respect. Agent-facing instructions live in `AGENTS.md`;
-the larger refactor roadmap lives in `refactor-plan.md`.
+implementation must respect. Agent-facing instructions live in `AGENTS.md`.
 
 ## Core Concepts
 
@@ -28,8 +27,7 @@ the larger refactor roadmap lives in `refactor-plan.md`.
 ### Architecture (hexagonal)
 
 The `state` module is split into three layers so the core logic is testable
-without a live compositor. See `docs/refactor-plan.md` for the full design
-rationale and sequencing:
+without a live compositor:
 
 - **Core (pure):** `WMState` and the layout engine. Knows nothing about River/Wayland.
   The single entry point is `WMState::handle_event(Event)`, a pure reducer over
@@ -48,7 +46,11 @@ The domain boundary types are:
 - `Effect` (`src/state/effects.rs`) — deferred window-level River protocol calls
   (`ProposeDimensions`, `Fullscreen`, `ExitFullscreen`, `UseSsd`, `EnsureNode`,
   `SetBorders`, `SetPosition`, `PlaceTop`, `Close`, `FocusWindow`). `ALL_EDGES`
-  is the bitmask requesting all four border edges.
+  is the bitmask requesting all four border edges. River's default `drawBorders`
+  in `Window.zig` is affected by a Zig 0.16.0 ReleaseSafe optimizer bug that elides
+  `wlr_scene_node_setEnabled(false)` when the struct field binding appears dead after
+  store; without a custom River build with the zero-size workaround, the top border
+  is always highlighted when pending-split keys are pressed.
 
 `handlers.rs` is a thin translator only: River event → `Event` (fed to
 `handle_event`), and `Effect` → adapter. **No state mutation happens in
@@ -276,15 +278,6 @@ flowchart TD
   `Fullscreen { restore }`, see `layout/tree.rs`). The authoritative state lives on
   the layout tree node and is mirrored into the reconciler's scene snapshots
   (`last_manage_scene` / `last_render_scene`).
-
-## Work in Progress / Gotchas
-
-- Some command implementations are placeholders: rotate and cycle are not wired.
-- Pointer-driven move/resize is implemented via the `InteractiveOp` state machine on `Seat`: a `PointerMoveRequested` / `PointerResizeRequested` River event records a pending op, `apply_manage` starts it with `op_start_pointer` (issuing `StartPointerOp` / `EndPointerOp` effects), and cumulative `op_delta` events translate/resize the window's floating rect (clamped to its `DimensionsHint`). `OpRelease` schedules `op_end`. The seat's `wl_pointer` is bound from the `wl_seat` global for cursor handling.
-- `wayland-client` event_created_child is used for River child objects;
-  manual child data hashing is commented out in `handlers.rs`.
-- `render_order_cache` must be cleared on any structural change to windows or focus.
-- `ensure_focused_output` falls back to the first output if none is focused yet.
 
 ## Important Invariants
 
