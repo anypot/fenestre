@@ -281,7 +281,6 @@ flowchart TD
 
 - Some command implementations are placeholders: rotate and cycle are not wired.
 - Pointer-driven move/resize is implemented via the `InteractiveOp` state machine on `Seat`: a `PointerMoveRequested` / `PointerResizeRequested` River event records a pending op, `apply_manage` starts it with `op_start_pointer` (issuing `StartPointerOp` / `EndPointerOp` effects), and cumulative `op_delta` events translate/resize the window's floating rect (clamped to its `DimensionsHint`). `OpRelease` schedules `op_end`. The seat's `wl_pointer` is bound from the `wl_seat` global for cursor handling.
-- IPC is not implemented.
 - `wayland-client` event_created_child is used for River child objects;
   manual child data hashing is commented out in `handlers.rs`.
 - `render_order_cache` must be cleared on any structural change to windows or focus.

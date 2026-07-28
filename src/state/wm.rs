@@ -51,17 +51,17 @@ pub(crate) struct WMState {
     pub(super) config: Option<Config>,
     pub(super) config_path: Option<PathBuf>,
 
-    pub(super) windows: HashMap<WindowId, Window>,
-    pub(super) outputs: HashMap<OutputId, Output>,
+    pub(crate) windows: HashMap<WindowId, Window>,
+    pub(crate) outputs: HashMap<OutputId, Output>,
     pub(super) seats: BTreeMap<SeatId, Seat>,
     pub(super) keybindings: HashMap<XkbBindingId, KeyBinding>,
     /// Runtime River pointer bindings (Super+drag to move/resize), keyed by id.
     pub(super) pointer_bindings: HashMap<PointerBindingId, PointerBinding>,
-    pub(super) output_trees: HashMap<OutputId, LayoutTree>,
+    pub(crate) output_trees: HashMap<OutputId, LayoutTree>,
 
-    pub(super) focused_window: Option<WindowId>,
-    pub(super) focused_output: Option<OutputId>,
-    pub(super) focus_stack: Vec<WindowId>,
+    pub(crate) focused_window: Option<WindowId>,
+    pub(crate) focused_output: Option<OutputId>,
+    pub(crate) focus_stack: Vec<WindowId>,
 
     pub(super) current_seat: Option<SeatId>,
 

@@ -122,7 +122,6 @@ scannable — move detailed explanations into `docs/`, not into this file.
 - A layout `rotate` command does not exist (no `Command::Rotate` variant). Focus
   cycling (`FocusNext` / `FocusPrevious`) is wired.
 - Pointer-driven move/resize is implemented (see `InteractiveOp` on `Seat` and the `StartPointerOp` / `EndPointerOp` / `SetCursor` effects); cumulative `op_delta` events drive a window's floating rect, clamped to its `DimensionsHint`.
-- IPC is not implemented.
 - `wayland-client` event_created_child is used for River child objects;
   manual child data hashing is commented out in `handlers.rs`.
 - `render_order_cache` must be cleared on any structural change to windows or focus.

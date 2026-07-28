@@ -97,7 +97,7 @@ impl WMState {
     /// own output) so the most recently focused window is always at the top.
     /// Low-level helper; callers that also need tree focus and River sync should
     /// use `focus_window_id` instead.
-    pub(super) fn push_focus(&mut self, window_id: WindowId) {
+    pub(crate) fn push_focus(&mut self, window_id: WindowId) {
         self.focus_stack.retain(|id| *id != window_id);
         self.focus_stack.insert(0, window_id);
         self.focused_window = Some(window_id);
@@ -109,7 +109,7 @@ impl WMState {
     /// Focus a window by ID, updating both the global focus state and the
     /// per-output `LayoutTree`. Queues a pending focus for River and requests
     /// a manage sequence.
-    pub(super) fn focus_window_id(&mut self, window_id: WindowId) {
+    pub(crate) fn focus_window_id(&mut self, window_id: WindowId) {
         if !self.windows.contains_key(&window_id) {
             return;
         }

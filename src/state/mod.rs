@@ -13,13 +13,13 @@ mod focus;
 mod handlers;
 mod input;
 mod keybindings;
-mod output;
+pub(crate) mod output;
 mod pointerbindings;
 mod reassign;
 pub mod rule;
 mod scene;
 mod seat;
-mod window;
+pub(crate) mod window;
 mod wm;
 
 pub(crate) use wm::WMState;
