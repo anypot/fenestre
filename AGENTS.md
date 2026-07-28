@@ -111,24 +111,10 @@ keybindings, update the docs to match before finishing:
 - **`AGENTS.md`**: this file — agent instructions, conventions, and pointers only
   (no code encyclopedia; that lives in `docs/architecture.md`).
 - **`docs/`**: `docs/architecture.md` for the conceptual model/invariants and
-  `docs/adr/` for accepted architecture decisions (index in `docs/adr/README.md`); `docs/refactor-plan.md` is the
-  roadmap and must stay untouched unless the user asks.
+  `docs/adr/` for accepted architecture decisions (index in `docs/adr/README.md`).
 
 Run `cargo fmt` and `cargo clippy --all-targets -- -D warnings` after editing any Rust file. `AGENTS.md` should stay short and
 scannable — move detailed explanations into `docs/`, not into this file.
-
-## Work in Progress / Gotchas
-
-- A layout `rotate` command does not exist (no `Command::Rotate` variant). Focus
-  cycling (`FocusNext` / `FocusPrevious`) is wired.
-- Pointer-driven move/resize is implemented (see `InteractiveOp` on `Seat` and the `StartPointerOp` / `EndPointerOp` / `SetCursor` effects); cumulative `op_delta` events drive a window's floating rect, clamped to its `DimensionsHint`.
-- `wayland-client` event_created_child is used for River child objects;
-  manual child data hashing is commented out in `handlers.rs`.
-- `render_order_cache` must be cleared on any structural change to windows or focus.
-- River's drawBorders uses a zero-size workaround for disabled edges — Zig 0.16.0
-  ReleaseSafe elides wlr_scene_node_setEnabled(false) extern calls when the struct
-  field binding appears dead after store.
-- `ensure_focused_output` falls back to the first output if none is focused yet.
 
 ## Important Invariants
 
@@ -151,13 +137,6 @@ scannable — move detailed explanations into `docs/`, not into this file.
    `desired_scene()` against it. Never collapse the two snapshots into one, and each
    phase must re-snapshot z-priority and border for **every** window so focus-only
    changes between renders are still caught.
-
-## Planned work
-
-Scope and sequencing for further improvements live in [`docs/refactor-plan.md`](docs/refactor-plan.md).
-Note that several of its initiatives (pure core + adapter split, declarative
-scene reconciler, unified TOML/Lua config schema, typed `WindowState`) are
-**already merged** — treat the plan as historical context, not a pending backlog.
 
 ## Docker / Environment Notes
 

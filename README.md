@@ -2,8 +2,6 @@
 
 Fenestre is an experimental Wayland window manager for [River](https://codeberg.org/river/river). It uses a binary space partitioning (BSP) tree as its core tiling model and supports Lua and TOML configuration.
 
-> Status: early-stage. Core tiling, keybindings, and config loading work; some commands are still placeholders. See [Status](#status).
-
 ## Install / Build
 
 Requires Rust 1.88+ (edition 2024) and the Wayland, xkbcommon, and Lua 5.4 development libraries. On Debian/Ubuntu:
@@ -22,7 +20,7 @@ cargo build --release --bin fnsctl
 Or install directly from the git repository (still requires the system libraries above). Pin to a release tag to avoid pulling unreleased commits:
 
 ```sh
-cargo install --git https://github.com/anypot/fenestre --tag v0.1.0
+cargo install --git https://github.com/anypot/fenestre --tag v0.2.0
 ```
 
 Run (with debug logging):
@@ -67,6 +65,8 @@ Fenestre runs as a River window manager client. It requires a River that support
 - `river_input_management_v1`
 - `river_libinput_config_v1`
 - `river_xkb_config_v1`
+
+Note: River's default `drawBorders` in `Window.zig` is affected by a Zig 0.16.0 ReleaseSafe optimizer bug that elides `wlr_scene_node_setEnabled(false)` when the struct field binding appears dead after store. Without a custom River build with the zero-size workaround, the top border is always highlighted when pending-split keys are pressed. See [river/river!1498](https://codeberg.org/river/river/pulls/1498) for the proposed upstream fix.
 
 ## Configuration
 
@@ -197,9 +197,3 @@ Dynamic switching between multiple comma-separated layouts is supported via the 
 - `Super+Ctrl+j`: focus output below
 - `Super+Ctrl+k`: focus output above
 - `Super+Ctrl+l`: focus output to the right
-
-## Status
-
-Working: River integration, Lua + TOML config loading (TOML preferred), per-output BSP layout with hotplug reassignment, compositor-side borders, window rules, keyboard-driven focus/move/resize, pointer-driven move/resize (interactive move/resize of windows via the compositor's `op_start_pointer` flow), input device configuration (libinput settings, keyboard layout, repeat rate/delay), and config reload that re-applies device settings.
-
-Not yet implemented: a layout rotate command.
