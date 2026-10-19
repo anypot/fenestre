@@ -230,7 +230,29 @@ flowchart TD
   `xkb_keyboards`, `xkb_keyboards_by_proxy`) give O(1) lookup by ID, proxy, or name.
 - Config application is centralized in `adapter.rs`:
   - `apply_device_config` → `apply_input_config` + `apply_keyboard_layout` + `apply_repeat_config`.
-  - Called on device `Done` events and on config load/reload.
+  - Applied **once per discovery**: when the parent device gets a `Name`, and when
+    its `RiverLibinputDeviceV1` / `RiverXkbKeyboardV1` child objects are
+    registered. It is also applied on config reload. The initial config load
+    happens before the Wayland connection is opened, so no devices exist yet;
+    startup configuration instead relies on the discovery events above.
+  - `river_input_device_v1.done` is also not a trigger. The protocol only
+    guarantees that `done` arrives after all device info has been sent; it
+    does not promise that it is sent only once. All properties on this
+    object (`name`, `type`) are immutable, and river currently sends `done`
+    exactly once per object, at creation (immediately after `Name`, which
+    already applies config), so a `done` handler would have nothing new to
+    apply. This rests on river's implementation, not a protocol guarantee:
+    revisit the decision if river starts re-sending `done` after client
+    requests (e.g. `set_scroll_factor`, `map_to_output`), or if the protocol
+    gains a mutable property announced through `done`. Either change would
+    make `done` behave like the libinput child's and risk the same
+    request/`done` feedback loop.
+  - `river_libinput_device_v1.done` is deliberately **not** a trigger. Since
+    version 2 of `river_libinput_config_v1`, the compositor emits `done` after
+    applying each successful libinput request (re-broadcasting the `*_current`
+    state first), so re-applying config from it would issue the same requests
+    again and create an unbounded request/`done` feedback loop that starves the
+    manage/render cycle.
 - Lifecycle: `Removed` events clean up all indexes and destroy the Wayland proxy.
   Child proxies (`RiverLibinputDeviceV1`, `RiverXkbKeyboardV1`) are destroyed
   explicitly to avoid leaking Wayland objects.

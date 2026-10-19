@@ -877,15 +877,19 @@ impl Dispatch<RiverInputDeviceV1, ()> for WMState {
                     }
                     state.input_devices_by_name.insert(name, device_id);
                 }
-                // Fallback for protocol <v2: Name is the last event before the device
-                // is fully enumerated, so apply config here.
+                // Apply config once the device has a name. `Name` is sent exactly
+                // once on every protocol version, so this is the natural
+                // discovery point; the per-device libinput/xkb child objects
+                // apply their own settings when they are registered (see the
+                // RiverLibinputDeviceV1 and RiverXkbKeyboardV1 handlers below).
                 if state.config.is_some() {
                     state.apply_device_config(qh);
                 }
             }
-            Event::Done if state.config.is_some() => {
-                state.apply_device_config(qh);
-            }
+            // No action for `Done`: all device info is immutable, and river
+            // emits `Done` only once at creation (right after `Name`, which
+            // already applied config). See "Input Device Model" in
+            // `docs/architecture.md`.
             _ => {}
         }
     }
@@ -931,9 +935,10 @@ impl Dispatch<RiverLibinputDeviceV1, ()> for WMState {
                     }
                 }
             }
-            Event::Done if state.config.is_some() => {
-                state.apply_device_config(qh);
-            }
+            // No action for `Done`: since `river_libinput_config_v1` v2,
+            // `done` follows every successful config request, so re-applying
+            // config here would create an unbounded request/`done` feedback
+            // loop. See "Input Device Model" in `docs/architecture.md`.
             _ => {}
         }
     }
