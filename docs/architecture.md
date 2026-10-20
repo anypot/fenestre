@@ -46,11 +46,12 @@ The domain boundary types are:
 - `Effect` (`src/state/effects.rs`) — deferred window-level River protocol calls
   (`ProposeDimensions`, `Fullscreen`, `ExitFullscreen`, `UseSsd`, `EnsureNode`,
   `SetBorders`, `SetPosition`, `PlaceTop`, `Close`, `FocusWindow`). `ALL_EDGES`
-  is the bitmask requesting all four border edges. River's default `drawBorders`
-  in `Window.zig` is affected by a Zig 0.16.0 ReleaseSafe optimizer bug that elides
-  `wlr_scene_node_setEnabled(false)` when the struct field binding appears dead after
-  store; without a custom River build with the zero-size workaround, the top border
-  is always highlighted when pending-split keys are pressed.
+  is the bitmask requesting all four border edges. River 0.4.6 and earlier built
+  with Zig 0.16 ReleaseSafe miscompile `drawBorders` in `Window.zig`
+  ([ziglang/zig#35373](https://codeberg.org/ziglang/zig/issues/35373)), leaving
+  the top border highlighted while pending-split keys are pressed. River 0.4.7+
+  ships an upstream workaround, so Fenestre needs no custom River build or
+  client-side special casing.
 
 `handlers.rs` is a thin translator only: River event → `Event` (fed to
 `handle_event`), and `Effect` → adapter. **No state mutation happens in

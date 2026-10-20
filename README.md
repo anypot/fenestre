@@ -74,7 +74,7 @@ from, not a minimum: an older River (e.g. 0.4.8, which advertises
 without its newer features, while a newer River is capped at what this build
 understands, so it cannot send events the generated client cannot parse.
 
-Note: River's default `drawBorders` in `Window.zig` is affected by a Zig 0.16.0 ReleaseSafe optimizer bug that elides `wlr_scene_node_setEnabled(false)` when the struct field binding appears dead after store. Without a custom River build with the zero-size workaround, the top border is always highlighted when pending-split keys are pressed. See [river/river!1498](https://codeberg.org/river/river/pulls/1498) for the proposed upstream fix.
+Note: River 0.4.6 and earlier built with Zig 0.16 ReleaseSafe miscompile `drawBorders` in `Window.zig` ([ziglang/zig#35373](https://codeberg.org/ziglang/zig/issues/35373)), so the top border stays highlighted while pending-split keys are pressed. River 0.4.7+ ships an upstream workaround ([river/river@01162031](https://codeberg.org/river/river/commit/011620314585a82ac6de9851448c3d7e1269d86b)) and is unaffected; no custom River build is needed on those versions.
 
 ## Configuration
 
