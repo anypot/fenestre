@@ -257,6 +257,29 @@ flowchart TD
   Child proxies (`RiverLibinputDeviceV1`, `RiverXkbKeyboardV1`) are destroyed
   explicitly to avoid leaking Wayland objects.
 
+### Protocol Versioning
+
+- The XMLs in `protocol/` are the source of truth for the generated client and
+  are kept in sync with River 0.5.0: `river_window_management_v1` v6 and
+  `river_xkb_config_v1` v3. The remaining River protocols are unchanged since
+  0.4.8.
+- River 0.5.0 bumped both versions (`river_window_management_v1` 5 → 6 with
+  touch move/resize, `river_xkb_config_v1` 2 → 3 with scroll-lock state). Binding
+  the raw advertised version with an older generated interface lets the
+  compositor send an event opcode the client cannot parse, which surfaces as a
+  fatal `Malformed Wayland message` protocol error and stops event dispatch.
+- `handlers.rs` therefore binds every River global through
+  `capped_version::<P>()`, i.e. `min(advertised, P::interface().version)`. This
+  keeps Fenestre forward compatible when River bumps a protocol before the XMLs
+  are refreshed, at the cost of not using the newer features. When the cap
+  engages, a `debug` log records the interface name and both versions, so a
+  missing-feature report can be traced to a stale bundled XML.
+- When refreshing an XML, re-check the `Dispatch` match arms: exhaustive matches
+  (e.g. `RiverWindowV1`, `RiverSeatV1`) fail to compile on new events, while
+  handlers with wildcard arms silently ignore them, so review those manually.
+  Touch move/resize events are currently logged and ignored, as Fenestre
+  implements pointer-driven (not touch) interactive move/resize.
+
 ### Configuration
 
 - Both Lua (`.lua`) and TOML (`.toml`) config formats are supported. TOML is
