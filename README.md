@@ -20,7 +20,7 @@ cargo build --release --bin fnsctl
 Or install directly from the git repository (still requires the system libraries above). Pin to a release tag to avoid pulling unreleased commits:
 
 ```sh
-cargo install --git https://github.com/anypot/fenestre --tag v0.2.0
+cargo install --git https://github.com/anypot/fenestre --tag v0.2.1
 ```
 
 Run (with debug logging):
