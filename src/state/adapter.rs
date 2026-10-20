@@ -563,10 +563,10 @@ impl WMState {
 
     /// Generate and apply the configured keyboard layout keymap.
     pub(super) fn apply_keyboard_layout(&mut self, qh: &QueueHandle<Self>) {
-        // Only one in-flight keymap at a time; the RiverInputDeviceV1 and
-        // RiverLibinputDeviceV1 Done handlers both call this for the same
-        // physical device. If a keymap is already in-flight, defer the new
-        // layout so it is applied after the current one completes.
+        // Only one in-flight keymap at a time. Several discovery events (device
+        // name, libinput device, xkb keyboard) can trigger a config application
+        // for the same physical device. If a keymap is already in-flight, defer
+        // the new layout so it is applied after the current one completes.
         let Some(config) = self.config.as_ref() else {
             return;
         };
