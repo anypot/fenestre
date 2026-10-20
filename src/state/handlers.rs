@@ -48,6 +48,30 @@ use crate::protocol::river::river_xkb_config_v1::client::river_xkb_keymap_v1::Ri
 use log::{debug, warn};
 use wayland_client::{Connection, Dispatch, QueueHandle, protocol::wl_registry};
 
+/// Cap a compositor-advertised global version at the version known to the
+/// protocol XML this build was generated from.
+///
+/// Wayland object versions are negotiated as `min(client, server)`. Binding the
+/// raw advertised version lets a newer compositor send events this client's
+/// generated interface cannot parse, which surfaces as a fatal
+/// "Malformed Wayland message" protocol error. Capping keeps us forward
+/// compatible with newer River releases until the XMLs are refreshed.
+///
+/// When the cap engages, a debug log records the advertised and bundled
+/// versions so a missing-feature report can be traced back to the stale XML.
+fn capped_version<P: wayland_client::Proxy>(version: u32) -> u32 {
+    let interface = P::interface();
+    if version > interface.version {
+        debug!(
+            target: "fenestre::state::handlers",
+            "Capping {} from advertised version {version} to bundled XML version {}",
+            interface.name,
+            interface.version
+        );
+    }
+    version.min(interface.version)
+}
+
 impl Dispatch<wl_registry::WlRegistry, ()> for WMState {
     fn event(
         state: &mut Self,
@@ -66,13 +90,19 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WMState {
             match interface.as_str() {
                 "river_window_manager_v1" => {
                     debug!(target: "fenestre::state::handlers", "Found river_window_manager_v1");
-                    let rwm: RiverWindowManagerV1 = registry.bind(name, version, qh, ());
+                    let rwm: RiverWindowManagerV1 = registry.bind(
+                        name,
+                        capped_version::<RiverWindowManagerV1>(version),
+                        qh,
+                        (),
+                    );
                     state.wm = Some(rwm);
                     state.request_manage_dirty();
                 }
                 "river_xkb_bindings_v1" => {
                     debug!(target: "fenestre::state::handlers", "Found river_xkb_bindings_v1");
-                    let xkb: RiverXkbBindingsV1 = registry.bind(name, version, qh, ());
+                    let xkb: RiverXkbBindingsV1 =
+                        registry.bind(name, capped_version::<RiverXkbBindingsV1>(version), qh, ());
                     state.xkb_bindings = Some(xkb);
                     // Config may be loaded or reloaded before the XKB global becomes available,
                     // so request a River manage sequence when it appears.
@@ -82,7 +112,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WMState {
                 }
                 "river_layer_shell_v1" => {
                     debug!(target: "fenestre::state::handlers", "Found river_layer_shell_v1");
-                    let layer_shell: RiverLayerShellV1 = registry.bind(name, version, qh, ());
+                    let layer_shell: RiverLayerShellV1 =
+                        registry.bind(name, capped_version::<RiverLayerShellV1>(version), qh, ());
                     state.layer_shell = Some(layer_shell);
                     let output_ids: Vec<OutputId> = state.outputs.keys().copied().collect();
                     for o in output_ids {
@@ -95,12 +126,18 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WMState {
                 }
                 "river_input_manager_v1" => {
                     debug!(target: "fenestre::state::handlers", "Found river_input_manager_v1");
-                    let mgr: RiverInputManagerV1 = registry.bind(name, version, qh, ());
+                    let mgr: RiverInputManagerV1 =
+                        registry.bind(name, capped_version::<RiverInputManagerV1>(version), qh, ());
                     state.input_manager = Some(mgr);
                 }
                 "river_libinput_config_v1" => {
                     debug!(target: "fenestre::state::handlers", "Found river_libinput_config_v1");
-                    let cfg: RiverLibinputConfigV1 = registry.bind(name, version, qh, ());
+                    let cfg: RiverLibinputConfigV1 = registry.bind(
+                        name,
+                        capped_version::<RiverLibinputConfigV1>(version),
+                        qh,
+                        (),
+                    );
                     state.libinput_config = Some(cfg);
                     if state.config.is_some() {
                         state.apply_device_config(qh);
@@ -108,7 +145,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WMState {
                 }
                 "river_xkb_config_v1" => {
                     debug!(target: "fenestre::state::handlers", "Found river_xkb_config_v1");
-                    let cfg: RiverXkbConfigV1 = registry.bind(name, version, qh, ());
+                    let cfg: RiverXkbConfigV1 =
+                        registry.bind(name, capped_version::<RiverXkbConfigV1>(version), qh, ());
                     state.xkb_config = Some(cfg);
                     if state.config.is_some() {
                         state.apply_device_config(qh);
@@ -451,6 +489,24 @@ impl Dispatch<RiverWindowV1, ()> for WMState {
                     "RiverWindowV1 event: Capture sessions updated to {count}"
                 );
             }
+            Event::TouchMoveRequested { seat, touch_point } => {
+                // Touch-driven interactive move is not implemented yet; log and
+                // ignore so the request is not mistaken for a protocol error.
+                debug!(
+                    target: "fenestre::state::handlers",
+                    "RiverWindowV1 event: Touch move requested for seat {seat:?} touch point {touch_point}; ignoring"
+                );
+            }
+            Event::TouchResizeRequested {
+                seat,
+                touch_point,
+                edges,
+            } => {
+                debug!(
+                    target: "fenestre::state::handlers",
+                    "RiverWindowV1 event: Touch resize requested for seat {seat:?} touch point {touch_point} with edges {edges:?}; ignoring"
+                );
+            }
         }
     }
 }
@@ -630,6 +686,29 @@ impl Dispatch<RiverSeatV1, ()> for WMState {
                 };
                 let event = super::events::Event::SeatPointerPositionUpdated { seat_id, x, y };
                 state.handle_event(event);
+            }
+            Event::OpDeltaTouch {
+                touch_point,
+                dx,
+                dy,
+            } => {
+                // Touch-driven interactive operations are not implemented yet.
+                debug!(
+                    target: "fenestre::state::handlers",
+                    "RiverSeatV1 event: Touch op delta for touch point {touch_point} (dx {dx}, dy {dy}); ignoring"
+                );
+            }
+            Event::OpReleaseTouch { touch_point } => {
+                debug!(
+                    target: "fenestre::state::handlers",
+                    "RiverSeatV1 event: Touch op released for touch point {touch_point}; ignoring"
+                );
+            }
+            Event::OpCancelTouch { touch_point } => {
+                debug!(
+                    target: "fenestre::state::handlers",
+                    "RiverSeatV1 event: Touch op cancelled for touch point {touch_point}; ignoring"
+                );
             }
         }
     }
@@ -1065,5 +1144,48 @@ impl Dispatch<RiverLibinputAccelConfigV1, ()> for WMState {
         _qh: &QueueHandle<Self>,
     ) {
         match event {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wayland_client::Proxy;
+
+    #[test]
+    fn capped_version_clamps_to_bundled_xml_version() {
+        // A newer compositor must never be bound at a version above the
+        // generated interface, or it can send events wayland-backend cannot
+        // parse ("Malformed Wayland message").
+        assert_eq!(
+            capped_version::<RiverWindowManagerV1>(u32::MAX),
+            RiverWindowManagerV1::interface().version
+        );
+        assert_eq!(
+            capped_version::<RiverXkbConfigV1>(u32::MAX),
+            RiverXkbConfigV1::interface().version
+        );
+    }
+
+    #[test]
+    fn capped_version_keeps_older_advertised_version() {
+        // River 0.4.x advertises river_window_management_v1 v5 and
+        // river_xkb_config_v1 v2; those binds must stay at the older version
+        // so an older compositor keeps working.
+        assert_eq!(capped_version::<RiverWindowManagerV1>(5), 5);
+        assert_eq!(capped_version::<RiverXkbConfigV1>(2), 2);
+    }
+
+    #[test]
+    fn bundled_river_xml_versions_are_pinned() {
+        // Update together with protocol/*.xml, and re-check the `Dispatch`
+        // match arms for newly added events (see "Protocol Versioning" in
+        // docs/architecture.md).
+        assert_eq!(RiverWindowManagerV1::interface().version, 6);
+        assert_eq!(RiverXkbConfigV1::interface().version, 3);
+        assert_eq!(RiverXkbBindingsV1::interface().version, 3);
+        assert_eq!(RiverLayerShellV1::interface().version, 1);
+        assert_eq!(RiverInputManagerV1::interface().version, 2);
+        assert_eq!(RiverLibinputConfigV1::interface().version, 2);
     }
 }

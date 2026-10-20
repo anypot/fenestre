@@ -144,11 +144,19 @@ CI runs in `.github/workflows/ci.yml` (fmt + clippy `-D warnings` + tests on
 push/PR). No Dockerfile is present. The project targets a Linux desktop environment
 with a River compositor that supports:
 
-- `river_window_management_v1` (version 5)
+- `river_window_management_v1` (v6 in the bundled XML, from River 0.5.0)
 - `river_xkb_bindings_v1` (version 3)
 - `river_layer_shell_v1` (layer-shell exclusive zones and keyboard focus)
 - `river_input_management_v1` (input device discovery and repeat)
 - `river_libinput_config_v1` (per-device libinput settings)
-- `river_xkb_config_v1` (keyboard layout via xkbcommon keymap)
+- `river_xkb_config_v1` (version 3, keyboard layout and lock state via xkbcommon keymap)
+
+The versions above are those of the bundled XMLs, not minimum requirements.
+Globals are bound at `min(advertised version, version in the bundled XML)`, so an
+older River is bound at its lower advertised version and keeps working (without
+the newer features), while a newer River cannot send events the generated client
+cannot parse (which shows up as a fatal "Malformed Wayland message" protocol
+error). Refresh the XMLs in `protocol/` and re-check the event match arms when
+River bumps protocol versions.
 
 Building requires Rust 1.88+ (edition 2024) and Wayland development libraries.

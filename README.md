@@ -57,7 +57,8 @@ When no path is given, Fenestre searches `$XDG_CONFIG_HOME/fenestre/` and `~/.co
 
 ## Runtime requirements
 
-Fenestre runs as a River window manager client. It requires a River that supports:
+Fenestre runs as a River window manager client. It needs a River that provides
+the following globals:
 
 - `river_window_management_v1`
 - `river_xkb_bindings_v1`
@@ -65,6 +66,13 @@ Fenestre runs as a River window manager client. It requires a River that support
 - `river_input_management_v1`
 - `river_libinput_config_v1`
 - `river_xkb_config_v1`
+
+Each global is bound at the lower of the compositor-advertised version and the
+version known to the bundled XML. River 0.5.0 is the release the XMLs were taken
+from, not a minimum: an older River (e.g. 0.4.8, which advertises
+`river_window_management_v1` v5) is bound at its older version and keeps working
+without its newer features, while a newer River is capped at what this build
+understands, so it cannot send events the generated client cannot parse.
 
 Note: River's default `drawBorders` in `Window.zig` is affected by a Zig 0.16.0 ReleaseSafe optimizer bug that elides `wlr_scene_node_setEnabled(false)` when the struct field binding appears dead after store. Without a custom River build with the zero-size workaround, the top border is always highlighted when pending-split keys are pressed. See [river/river!1498](https://codeberg.org/river/river/pulls/1498) for the proposed upstream fix.
 
